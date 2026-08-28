@@ -7,6 +7,8 @@ public nonisolated enum GitServiceError: LocalizedError, Sendable {
     case commandFailed(operation: String, status: Int32?, detail: String)
     case invalidOutput(operation: String)
     case targetAlreadyExists(String)
+    case invalidBranchName(String)
+    case branchAlreadyExists(String)
     case branchAlreadyCheckedOut(branch: String, path: String)
     case cannotRemovePrimaryWorktree(String)
     case worktreeNotFound(String)
@@ -27,6 +29,12 @@ public nonisolated enum GitServiceError: LocalizedError, Sendable {
             return "Git returned unexpected output while trying to \(operation)."
         case let .targetAlreadyExists(path):
             return "A file or folder already exists at the new worktree location: \(path)"
+        case let .invalidBranchName(name):
+            return name.isEmpty
+                ? "Enter a name for the new branch."
+                : "“\(name)” is not a valid branch name."
+        case let .branchAlreadyExists(branch):
+            return "A local branch named “\(branch)” already exists."
         case let .branchAlreadyCheckedOut(branch, path):
             return "The branch “\(branch)” is already checked out at \(path)."
         case let .cannotRemovePrimaryWorktree(path):
@@ -261,6 +269,57 @@ public nonisolated struct GitService: Sendable {
             )
         }
 
+        let target = try prepareWorktreeTarget(targetURL)
+
+        var arguments = ["worktree", "add"]
+        if branch.kind == .local {
+            // Passing the fully-qualified refs/heads/... name here makes Git
+            // treat it as a commit-ish and create a detached worktree. The short
+            // local name preserves the branch checkout.
+            arguments += ["--", target.path, branch.localBranchName]
+        } else if try await localBranchExists(branch.localBranchName, in: repository) {
+            arguments += ["--", target.path, branch.localBranchName]
+        } else {
+            arguments += ["--track", "-b", branch.localBranchName, "--", target.path, branch.reference]
+        }
+
+        _ = try await runGit(arguments, in: repository, operation: "create the worktree")
+
+        return try await newlyCreatedWorktree(at: target, in: repository)
+    }
+
+    /// Creates a new local branch at `startPoint` and checks it out in a new
+    /// worktree as one atomic Git operation.
+    public func createWorktree(
+        repository: RepositoryRecord,
+        newBranchNamed branchName: String,
+        startingAt startPoint: GitBranch,
+        at targetURL: URL
+    ) async throws -> WorktreeInfo {
+        let branchName = branchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branchName.isEmpty else {
+            throw GitServiceError.invalidBranchName(branchName)
+        }
+        guard try await !localBranchExists(branchName, in: repository) else {
+            throw GitServiceError.branchAlreadyExists(branchName)
+        }
+
+        let target = try prepareWorktreeTarget(targetURL)
+        let arguments = [
+            "worktree",
+            "add",
+            "-b",
+            branchName,
+            "--",
+            target.path,
+            startPoint.reference,
+        ]
+        _ = try await runGit(arguments, in: repository, operation: "create the worktree")
+
+        return try await newlyCreatedWorktree(at: target, in: repository)
+    }
+
+    private func prepareWorktreeTarget(_ targetURL: URL) throws -> URL {
         let target = targetURL.standardizedFileURL
         guard !FileManager.default.fileExists(atPath: target.path) else {
             throw GitServiceError.targetAlreadyExists(target.path)
@@ -278,21 +337,13 @@ public nonisolated struct GitService: Sendable {
                 detail: error.localizedDescription
             )
         }
+        return target
+    }
 
-        var arguments = ["worktree", "add"]
-        if branch.kind == .local {
-            // Passing the fully-qualified refs/heads/... name here makes Git
-            // treat it as a commit-ish and create a detached worktree. The short
-            // local name preserves the branch checkout.
-            arguments += ["--", target.path, branch.localBranchName]
-        } else if try await localBranchExists(branch.localBranchName, in: repository) {
-            arguments += ["--", target.path, branch.localBranchName]
-        } else {
-            arguments += ["--track", "-b", branch.localBranchName, "--", target.path, branch.reference]
-        }
-
-        _ = try await runGit(arguments, in: repository, operation: "create the worktree")
-
+    private func newlyCreatedWorktree(
+        at target: URL,
+        in repository: RepositoryRecord
+    ) async throws -> WorktreeInfo {
         let normalizedTarget = Self.normalizedPath(target)
         guard let created = try await listWorktrees(in: repository).first(where: {
             Self.normalizedPath($0.url) == normalizedTarget

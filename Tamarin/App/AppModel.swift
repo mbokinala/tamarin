@@ -34,6 +34,18 @@ enum WorktreeRemovalResult {
     case failed
 }
 
+private enum WorktreeCreationRequest {
+    case existing(GitBranch)
+    case new(name: String, startPoint: GitBranch)
+
+    var branchName: String {
+        switch self {
+        case let .existing(branch): branch.localBranchName
+        case let .new(name, _): name
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -265,15 +277,47 @@ final class AppModel {
 
     @discardableResult
     func createWorktree(repositoryID: UUID, branch: GitBranch) async -> Bool {
-        guard busyMessage == nil, let repository = repository(id: repositoryID) else {
-            return false
-        }
         guard !branch.isCheckedOut else {
             notice = AppNotice(
                 title: "Branch Already Checked Out",
                 message: branch.checkoutPath.map { "This branch is already checked out at \($0)." }
                     ?? "This branch is already checked out in another worktree."
             )
+            return false
+        }
+
+        return await createWorktree(
+            repositoryID: repositoryID,
+            request: .existing(branch)
+        )
+    }
+
+    @discardableResult
+    func createWorktree(
+        repositoryID: UUID,
+        newBranchName: String,
+        startingAt startPoint: GitBranch
+    ) async -> Bool {
+        let branchName = newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branchName.isEmpty else {
+            notice = AppNotice(
+                title: "Branch Name Required",
+                message: "Enter a name for the new branch."
+            )
+            return false
+        }
+
+        return await createWorktree(
+            repositoryID: repositoryID,
+            request: .new(name: branchName, startPoint: startPoint)
+        )
+    }
+
+    private func createWorktree(
+        repositoryID: UUID,
+        request: WorktreeCreationRequest
+    ) async -> Bool {
+        guard busyMessage == nil, let repository = repository(id: repositoryID) else {
             return false
         }
 
@@ -303,16 +347,27 @@ final class AppModel {
             return false
         }
 
-        let destination = uniqueDestination(in: root, branchName: branch.localBranchName)
-        busyMessage = "Creating \(branch.localBranchName)…"
+        let branchName = request.branchName
+        let destination = uniqueDestination(in: root, branchName: branchName)
+        busyMessage = "Creating \(branchName)…"
 
         let createdWorktree: WorktreeInfo
         do {
-            createdWorktree = try await git.createWorktree(
-                repository: repository,
-                branch: branch,
-                at: destination
-            )
+            switch request {
+            case let .existing(branch):
+                createdWorktree = try await git.createWorktree(
+                    repository: repository,
+                    branch: branch,
+                    at: destination
+                )
+            case let .new(name, startPoint):
+                createdWorktree = try await git.createWorktree(
+                    repository: repository,
+                    newBranchNamed: name,
+                    startingAt: startPoint,
+                    at: destination
+                )
+            }
         } catch {
             busyMessage = nil
             present(error, title: "Could Not Create Worktree")

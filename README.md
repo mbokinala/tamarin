@@ -17,7 +17,7 @@ Swing between (work)trees
 ## Features
 
 - Add repositories and browse their registered worktrees in one sidebar.
-- Create worktrees from local or remote branches.
+- Create worktrees from local or remote branches, or create a new branch from any existing ref.
 - Open multiple [Ghostty](https://github.com/ghostty-org/ghostty)-based terminal tabs for each worktree.
 - Switch worktrees with the keyboard while terminal sessions stay open.
 - Set a worktree directory and a setup script for each repository.
