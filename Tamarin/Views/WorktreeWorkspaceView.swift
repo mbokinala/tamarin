@@ -1,3 +1,4 @@
+import AppKit
 import GhosttyTerminal
 import SwiftUI
 
@@ -9,15 +10,14 @@ struct WorktreeWorkspaceView: View {
     @State private var renameText = ""
     @State private var showingRename = false
     @State private var showingRemoveConfirmation = false
+    @State private var hoveredSessionID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
             workspaceHeader
-            Divider()
             terminalTabBar
             Divider()
             ZStack {
-                Color(nsColor: .windowBackgroundColor)
                 TerminalDeckView()
 
                 if let worktree = model.selectedWorktreeInfo {
@@ -26,6 +26,7 @@ struct WorktreeWorkspaceView: View {
                     noSelectionView
                 }
             }
+            .background(Color(nsColor: .windowBackgroundColor))
         }
         .alert("Rename Terminal", isPresented: $showingRename) {
             TextField("Terminal name", text: $renameText)
@@ -37,7 +38,7 @@ struct WorktreeWorkspaceView: View {
                 session.rename(to: renameText)
             }
         } message: {
-            Text("Leave the name empty to use the title reported by the shell.")
+            Text("Leave the name empty to restore the default terminal name.")
         }
         .confirmationDialog(
             "Remove this worktree?",
@@ -65,51 +66,57 @@ struct WorktreeWorkspaceView: View {
         {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(worktree.branch ?? "Detached HEAD")
-                        .font(.headline)
-                    Text("\(repository.name) · \(worktree.path)")
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 6) {
+                        Text(worktreeTitle(worktree))
+                            .font(.headline)
+                            .lineLimit(1)
+
+                        if worktree.isLocked {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .help(worktree.lockReason ?? "This worktree is locked")
+                        }
+                    }
+
+                    Text("\(repository.name) · \(abbreviatedPath(worktree.path))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                if worktree.isPrimary {
-                    statusBadge("Repository", systemImage: "shippingbox")
-                }
-                if worktree.isLocked {
-                    statusBadge("Locked", systemImage: "lock")
-                }
-
-                Spacer()
                 Button {
                     model.reveal(worktree.path)
                 } label: {
                     Image(systemName: "finder")
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.borderless)
                 .help("Reveal in Finder")
-
-                Button {
-                    _ = model.createTerminal()
-                } label: {
-                    Label("New Terminal", systemImage: "plus.rectangle.on.rectangle")
-                }
-                .disabled(worktree.isPrunable)
 
                 if !worktree.isPrimary {
                     Button(role: .destructive) {
                         showingRemoveConfirmation = true
                     } label: {
                         Image(systemName: "trash")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.borderless)
                     .disabled(!model.sessions(for: worktree.path).isEmpty || worktree.isLocked)
                     .help(removalHelp(worktree))
                 }
             }
-            .padding(.horizontal, 14)
-            .frame(height: 57)
+            .padding(.horizontal, 16)
+            .frame(height: 44)
         } else {
             HStack {
                 Text("Worktree")
@@ -117,8 +124,8 @@ struct WorktreeWorkspaceView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            .padding(.horizontal, 14)
-            .frame(height: 57)
+            .padding(.horizontal, 16)
+            .frame(height: 44)
         }
     }
 
@@ -127,7 +134,7 @@ struct WorktreeWorkspaceView: View {
         if let selection = model.selectedWorktree {
             let sessions = model.sessions(for: selection.path)
             ScrollView(.horizontal) {
-                HStack(spacing: 4) {
+                HStack(spacing: 0) {
                     ForEach(sessions) { session in
                         terminalTab(session)
                     }
@@ -136,38 +143,47 @@ struct WorktreeWorkspaceView: View {
                         _ = model.createTerminal()
                     } label: {
                         Image(systemName: "plus")
-                            .frame(width: 24, height: 24)
+                            .frame(width: 30, height: 30)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.borderless)
+                    .disabled(model.selectedWorktreeInfo?.isPrunable == true)
                     .help("New terminal")
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
             }
             .scrollIndicators(.hidden)
-            .frame(height: 39)
-            .background(.bar)
+            .frame(height: 34)
+            .background(Color(nsColor: .controlBackgroundColor))
         } else {
-            Color.clear.frame(height: 39)
+            Color(nsColor: .controlBackgroundColor).frame(height: 34)
         }
     }
 
     private func terminalTab(_ session: TerminalTabSession) -> some View {
         let active = model.activeTerminalByWorktree[session.worktreePath] == session.id
 
-        return HStack(spacing: 3) {
+        let hovered = hoveredSessionID == session.id
+
+        return HStack(spacing: 0) {
             Button {
                 model.selectTerminal(session.id)
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     Image(systemName: session.isExited ? "xmark.circle" : "terminal")
                         .font(.caption)
-                    Text(session.title)
+                        .foregroundStyle(.secondary)
+
+                    Text(session.tabTitle)
                         .font(.caption)
                         .lineLimit(1)
-                        .frame(maxWidth: 180)
+                        .truncationMode(.middle)
+                        .frame(minWidth: 70, maxWidth: 180, alignment: .leading)
                 }
-                .padding(.leading, 8)
-                .padding(.vertical, 5)
+                .padding(.leading, 9)
+                .padding(.trailing, 5)
+                .frame(height: 34)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .simultaneousGesture(
@@ -175,6 +191,7 @@ struct WorktreeWorkspaceView: View {
                     beginRename(session)
                 }
             )
+            .help(session.title)
 
             Button {
                 model.closeTerminal(session.id)
@@ -184,15 +201,31 @@ struct WorktreeWorkspaceView: View {
                     .frame(width: 19, height: 19)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .padding(.trailing, 3)
+            .buttonStyle(.borderless)
+            .padding(.trailing, 5)
+            .opacity(active || hovered ? 0.75 : 0)
+            .allowsHitTesting(active || hovered)
             .help("Close terminal")
         }
-        .background(active ? Color.accentColor.opacity(0.17) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(active ? Color.accentColor.opacity(0.35) : .clear, lineWidth: 1)
+        .frame(minWidth: 116, maxWidth: 230, alignment: .leading)
+        .frame(height: 34)
+        .contentShape(Rectangle())
+        .background(active ? Color(nsColor: .windowBackgroundColor) : Color.clear)
+        .overlay(alignment: .bottom) {
+            if active {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.55))
+                .frame(width: 1)
+                .padding(.vertical, 7)
+        }
+        .onHover { isHovering in
+            hoveredSessionID = isHovering ? session.id : nil
         }
         .contextMenu {
             Button("Rename…") { beginRename(session) }
@@ -282,18 +315,22 @@ struct WorktreeWorkspaceView: View {
         .shadow(color: .black.opacity(0.1), radius: 8, y: 3)
     }
 
-    private func statusBadge(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(.quaternary, in: Capsule())
+    private func worktreeTitle(_ worktree: WorktreeInfo) -> String {
+        if worktree.isDetached, let head = worktree.head {
+            return "Detached · \(head.prefix(8))"
+        }
+        return worktree.branch ?? "Worktree"
+    }
+
+    private func abbreviatedPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard path.hasPrefix(home + "/") else { return path }
+        return "~" + String(path.dropFirst(home.count))
     }
 
     private func beginRename(_ session: TerminalTabSession) {
         renameSessionID = session.id
-        renameText = session.customTitle ?? session.title
+        renameText = session.customTitle ?? session.tabTitle
         showingRename = true
     }
 

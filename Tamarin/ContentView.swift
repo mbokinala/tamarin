@@ -23,7 +23,7 @@ struct ContentView: View {
                 createWorktree: { worktreeRepository = $0 },
                 showSettings: { settingsRepository = $0 }
             )
-            .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 380)
+            .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 420)
         } detail: {
             WorktreeWorkspaceView(addRepository: chooseRepository)
         }
@@ -59,14 +59,6 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
                 .padding(.top, 12)
                 .allowsHitTesting(false)
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: chooseRepository) {
-                    Label("Add Repository", systemImage: "folder.badge.plus")
-                }
-                .help("Add a Git repository")
             }
         }
     }

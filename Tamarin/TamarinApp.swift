@@ -18,5 +18,6 @@ struct TamarinApp: App {
                 .frame(minWidth: 820, minHeight: 560)
         }
         .defaultSize(width: 1220, height: 780)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
     }
 }

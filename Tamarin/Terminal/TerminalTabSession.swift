@@ -33,7 +33,11 @@ final class TerminalTabSession: Identifiable {
         self.customTitle = customTitle
         generatedTitle = "Terminal \(ordinal)"
 
-        let terminal = TerminalViewState()
+        let terminal = TerminalViewState(
+            terminalConfiguration: TerminalConfiguration()
+                .windowPaddingX(10)
+                .windowPaddingY(8)
+        )
         terminal.configuration = TerminalSurfaceOptions(
             backend: .exec,
             workingDirectory: worktreePath,
@@ -64,6 +68,13 @@ final class TerminalTabSession: Identifiable {
             return customTitle
         }
         return generatedTitle
+    }
+
+    var tabTitle: String {
+        if let customTitle, !customTitle.isEmpty {
+            return customTitle
+        }
+        return "Terminal \(ordinal)"
     }
 
     func rename(to title: String) {

@@ -3,140 +3,227 @@ import SwiftUI
 
 struct RepositorySidebar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.controlActiveState) private var controlActiveState
 
     let addRepository: () -> Void
     let createWorktree: (RepositoryRecord) -> Void
     let showSettings: (RepositoryRecord) -> Void
 
+    @State private var hoveredWorktree: WorktreeSelection?
+    @State private var addRepositoryHovered = false
+
     var body: some View {
-        if model.repositories.isEmpty {
-            ContentUnavailableView {
-                Label("No Repositories", systemImage: "point.3.connected.trianglepath.dotted")
-            } description: {
-                Text("Add a Git repository to manage its worktrees.")
-            } actions: {
-                Button("Add Repository…", action: addRepository)
+        VStack(spacing: 0) {
+            if model.repositories.isEmpty {
+                emptyState
+            } else {
+                repositoryList
             }
-            .padding()
-        } else {
-            List {
+
+            Divider()
+            addRepositoryButton
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var repositoryList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
                 ForEach(model.repositories) { repository in
-                    Section {
-                        repositoryWorktrees(repository)
-                    } header: {
+                    VStack(alignment: .leading, spacing: 2) {
                         repositoryHeader(repository)
+                        repositoryWorktrees(repository)
                     }
                 }
             }
-            .listStyle(.sidebar)
-            .navigationTitle("Tamarin")
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
         }
+        .scrollIndicators(.automatic)
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Repositories", systemImage: "point.3.connected.trianglepath.dotted")
+        } description: {
+            Text("Add a Git repository to manage its worktrees.")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    private var addRepositoryButton: some View {
+        Button(action: addRepository) {
+            HStack(spacing: 7) {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16)
+                Text("Add Repository…")
+                    .font(.caption)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(addRepositoryHovered ? Color.primary.opacity(0.055) : .clear)
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .onHover { addRepositoryHovered = $0 }
+        .help("Add a Git repository")
     }
 
     @ViewBuilder
     private func repositoryWorktrees(_ repository: RepositoryRecord) -> some View {
-        if model.loadingRepositoryIDs.contains(repository.id),
-           model.worktrees(for: repository.id).isEmpty
-        {
-            HStack(spacing: 8) {
+        let worktrees = model.worktrees(for: repository.id)
+
+        if model.loadingRepositoryIDs.contains(repository.id), worktrees.isEmpty {
+            HStack(spacing: 7) {
                 ProgressView()
-                    .controlSize(.small)
+                    .controlSize(.mini)
+                    .frame(width: 16)
                 Text("Loading worktrees…")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 6)
-        } else if model.worktrees(for: repository.id).isEmpty {
-            Text("No worktrees found")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+        } else if worktrees.isEmpty {
+            HStack(spacing: 7) {
+                Image(systemName: "tray")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 16)
+                Text("No worktrees found")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
         } else {
-            ForEach(model.worktrees(for: repository.id)) { worktree in
+            ForEach(worktrees) { worktree in
                 worktreeRow(worktree, repository: repository)
             }
         }
     }
 
     private func repositoryHeader(_ repository: RepositoryRecord) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 7) {
             Image(systemName: "folder.fill")
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
+                .frame(width: 16)
+
             Text(repository.name)
                 .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+
             Spacer(minLength: 4)
+
             Button {
                 createWorktree(repository)
             } label: {
                 Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
             .help("Create a worktree")
 
-            Button {
-                showSettings(repository)
+            Menu {
+                Button("Create Worktree…") { createWorktree(repository) }
+                Button("Repository Settings…") { showSettings(repository) }
+                Divider()
+                Button("Reveal in Finder") { model.reveal(repository.path) }
             } label: {
-                Image(systemName: "gearshape")
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help("Repository settings")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .foregroundStyle(.secondary)
+            .fixedSize()
+            .help("Repository actions")
         }
-        .padding(.top, 5)
-        .contextMenu {
-            Button("Create Worktree…") { createWorktree(repository) }
-            Button("Repository Settings…") { showSettings(repository) }
-            Divider()
-            Button("Reveal Repository in Finder") { model.reveal(repository.path) }
-        }
+        .controlSize(.small)
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .contentShape(Rectangle())
+        .help(repository.path)
     }
 
     private func worktreeRow(
         _ worktree: WorktreeInfo,
         repository: RepositoryRecord
     ) -> some View {
-        let selected = model.selectedWorktree == WorktreeSelection(
+        let selection = WorktreeSelection(
             repositoryID: repository.id,
             path: worktree.path
         )
+        let selected = model.selectedWorktree == selection
+        let hovered = hoveredWorktree == selection
 
         return Button {
-            model.selectWorktree(repositoryID: repository.id, path: worktree.path)
+            model.selectWorktree(
+                repositoryID: repository.id,
+                path: worktree.path
+            )
         } label: {
-            HStack(spacing: 9) {
-                Image(systemName: worktree.isPrimary ? "shippingbox.fill" : "arrow.triangle.branch")
+            HStack(spacing: 7) {
+                Image(systemName: worktreeIcon(worktree))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(selected ? Color.accentColor : .secondary)
-                    .frame(width: 17)
+                    .frame(width: 16)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(worktree.branch ?? detachedTitle(worktree))
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
-                    Text(worktree.isPrimary ? "Repository" : worktree.url.lastPathComponent)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                worktreeName(worktree)
+
+                Spacer(minLength: 4)
+
+                let terminalCount = model.sessions(for: worktree.path).count
+                if terminalCount > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "terminal")
+                        Text("\(terminalCount)")
+                            .monospacedDigit()
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
 
-                Spacer(minLength: 2)
-                if !model.sessions(for: worktree.path).isEmpty {
-                    Text("\(model.sessions(for: worktree.path).count)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                }
                 if worktree.isLocked {
                     Image(systemName: "lock.fill")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.vertical, 3)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
             .contentShape(Rectangle())
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(rowBackground(selected: selected, hovered: hovered))
+            }
         }
         .buttonStyle(.plain)
-        .listRowBackground(selected ? Color.accentColor.opacity(0.13) : Color.clear)
+        .onHover { isHovering in
+            if isHovering {
+                hoveredWorktree = selection
+            } else if hoveredWorktree == selection {
+                hoveredWorktree = nil
+            }
+        }
         .contextMenu {
             Button("New Terminal") {
                 _ = model.createTerminal(
@@ -145,17 +232,70 @@ struct RepositorySidebar: View {
                 )
             }
             .disabled(worktree.isPrunable)
+
             Button("Reveal in Finder") { model.reveal(worktree.path) }
             Button("Copy Path") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(worktree.path, forType: .string)
             }
         }
-        .help(worktree.path)
+        .help("\(worktreeTitle(worktree))\n\(worktree.path)")
+        .accessibilityLabel(worktreeTitle(worktree))
+        .accessibilityValue(selected ? "Selected" : "")
     }
 
-    private func detachedTitle(_ worktree: WorktreeInfo) -> String {
-        guard let head = worktree.head else { return "Detached HEAD" }
-        return "Detached · \(head.prefix(8))"
+    @ViewBuilder
+    private func worktreeName(_ worktree: WorktreeInfo) -> some View {
+        if let branch = worktree.branch,
+           let separator = branch.lastIndex(of: "/")
+        {
+            let namespace = String(branch[...separator])
+            let leaf = String(branch[branch.index(after: separator)...])
+
+            HStack(spacing: 0) {
+                Text(namespace)
+                    .foregroundStyle(.secondary)
+                    .layoutPriority(0)
+                Text(leaf)
+                    .foregroundStyle(.primary)
+                    .layoutPriority(1)
+            }
+            .font(.callout)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        } else {
+            Text(worktreeTitle(worktree))
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+        }
+    }
+
+    private func rowBackground(selected: Bool, hovered: Bool) -> Color {
+        if selected {
+            if controlActiveState == .inactive {
+                return Color.primary.opacity(0.09)
+            }
+            return Color.accentColor.opacity(0.16)
+        }
+        if hovered {
+            return Color.primary.opacity(0.055)
+        }
+        return .clear
+    }
+
+    private func worktreeIcon(_ worktree: WorktreeInfo) -> String {
+        if worktree.isPrimary { return "folder.fill" }
+        if worktree.isDetached { return "point.3.filled.connected.trianglepath.dotted" }
+        return "arrow.triangle.branch"
+    }
+
+    private func worktreeTitle(_ worktree: WorktreeInfo) -> String {
+        if worktree.isDetached, let head = worktree.head {
+            return "Detached · \(head.prefix(8))"
+        }
+        return worktree.branch ?? "Worktree"
     }
 }
