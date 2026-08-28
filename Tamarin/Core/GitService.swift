@@ -10,6 +10,7 @@ public nonisolated enum GitServiceError: LocalizedError, Sendable {
     case branchAlreadyCheckedOut(branch: String, path: String)
     case cannotRemovePrimaryWorktree(String)
     case worktreeNotFound(String)
+    case worktreeRemovalRequiresForce(path: String, detail: String)
 
     public var errorDescription: String? {
         switch self {
@@ -32,6 +33,8 @@ public nonisolated enum GitServiceError: LocalizedError, Sendable {
             return "The primary repository worktree cannot be removed: \(path)"
         case let .worktreeNotFound(path):
             return "Git does not have a registered worktree at \(path)."
+        case let .worktreeRemovalRequiresForce(path, _):
+            return "The worktree at \(path) can only be removed with force."
         }
     }
 }
@@ -299,11 +302,12 @@ public nonisolated struct GitService: Sendable {
         return created
     }
 
-    /// Removes a registered linked worktree. This intentionally does not pass
-    /// `--force`, so Git protects dirty and untracked work.
+    /// Removes a registered linked worktree. Without `force`, Git protects
+    /// dirty worktrees and reports that the caller must explicitly retry.
     public func removeWorktree(
         repository: RepositoryRecord,
-        path worktreeURL: URL
+        path worktreeURL: URL,
+        force: Bool = false
     ) async throws {
         let normalizedRequestedPath = Self.normalizedPath(worktreeURL)
         let worktrees = try await listWorktrees(in: repository)
@@ -317,11 +321,30 @@ public nonisolated struct GitService: Sendable {
             throw GitServiceError.cannotRemovePrimaryWorktree(worktree.path)
         }
 
-        _ = try await runGit(
-            ["worktree", "remove", "--", worktree.path],
-            in: repository,
-            operation: "remove the worktree"
-        )
+        var arguments = ["worktree", "remove"]
+        if force {
+            arguments.append("--force")
+        }
+        arguments += ["--", worktree.path]
+
+        do {
+            _ = try await runGit(
+                arguments,
+                in: repository,
+                operation: "remove the worktree"
+            )
+        } catch let error as GitServiceError {
+            guard !force,
+                  case let .commandFailed(_, _, detail) = error,
+                  Self.removalErrorRequiresForce(detail)
+            else {
+                throw error
+            }
+            throw GitServiceError.worktreeRemovalRequiresForce(
+                path: worktree.path,
+                detail: detail
+            )
+        }
     }
 
     private func localBranchExists(
@@ -474,6 +497,13 @@ public nonisolated struct GitService: Sendable {
         if !stderr.isEmpty { return stderr }
         let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return stdout.isEmpty ? "Git did not provide an error message." : stdout
+    }
+
+    private static func removalErrorRequiresForce(_ detail: String) -> Bool {
+        let lowercaseDetail = detail.lowercased()
+        return lowercaseDetail.contains("--force")
+            || lowercaseDetail.contains("-f -f")
+            || lowercaseDetail.contains("working trees containing submodules")
     }
 
     private static func normalizedPath(_ url: URL) -> String {

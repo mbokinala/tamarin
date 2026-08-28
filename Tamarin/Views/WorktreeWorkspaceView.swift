@@ -9,7 +9,8 @@ struct WorktreeWorkspaceView: View {
     @State private var renameSessionID: UUID?
     @State private var renameText = ""
     @State private var showingRename = false
-    @State private var showingRemoveConfirmation = false
+    @State private var showingForceRemoveConfirmation = false
+    @State private var pendingForceRemoval: WorktreeSelection?
     @State private var hoveredSessionID: UUID?
 
     var body: some View {
@@ -29,6 +30,13 @@ struct WorktreeWorkspaceView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))
         }
+        .background {
+            UnevenRoundedRectangle(
+                cornerRadii: RectangleCornerRadii(topLeading: 10),
+                style: .continuous
+            )
+            .fill(Color(nsColor: .windowBackgroundColor))
+        }
         .alert("Rename Terminal", isPresented: $showingRename) {
             TextField("Terminal name", text: $renameText)
             Button("Cancel", role: .cancel) {}
@@ -41,22 +49,26 @@ struct WorktreeWorkspaceView: View {
         } message: {
             Text("Leave the name empty to restore the default terminal name.")
         }
-        .confirmationDialog(
-            "Remove this worktree?",
-            isPresented: $showingRemoveConfirmation,
-            titleVisibility: .visible
+        .alert(
+            "Force Remove Worktree?",
+            isPresented: $showingForceRemoveConfirmation
         ) {
-            Button("Remove Worktree", role: .destructive) {
-                guard let selection = model.selectedWorktree else { return }
+            Button("Cancel", role: .cancel) {
+                pendingForceRemoval = nil
+            }
+            Button("Force Remove", role: .destructive) {
+                guard let selection = pendingForceRemoval else { return }
+                pendingForceRemoval = nil
                 Task {
                     await model.removeWorktree(
                         repositoryID: selection.repositoryID,
-                        path: selection.path
+                        path: selection.path,
+                        force: true
                     )
                 }
             }
         } message: {
-            Text("Git will refuse if the worktree contains changes that would be lost. The branch is not deleted.")
+            Text("Git reports that this worktree can only be removed with force. This permanently deletes its uncommitted changes and untracked files. The branch is not deleted.")
         }
     }
 
@@ -105,7 +117,17 @@ struct WorktreeWorkspaceView: View {
 
                 if !worktree.isPrimary {
                     Button(role: .destructive) {
-                        showingRemoveConfirmation = true
+                        guard let selection = model.selectedWorktree else { return }
+                        Task {
+                            let result = await model.removeWorktree(
+                                repositoryID: selection.repositoryID,
+                                path: selection.path
+                            )
+                            if case .requiresForce = result {
+                                pendingForceRemoval = selection
+                                showingForceRemoveConfirmation = true
+                            }
+                        }
                     } label: {
                         Image(systemName: "trash")
                             .frame(width: 24, height: 24)

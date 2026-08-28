@@ -28,6 +28,12 @@ enum SetupExecutionState: Equatable {
     case failed(String)
 }
 
+enum WorktreeRemovalResult {
+    case removed
+    case requiresForce
+    case failed
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -351,32 +357,41 @@ final class AppModel {
         return true
     }
 
-    func removeWorktree(repositoryID: UUID, path: String) async {
+    @discardableResult
+    func removeWorktree(
+        repositoryID: UUID,
+        path: String,
+        force: Bool = false
+    ) async -> WorktreeRemovalResult {
         guard busyMessage == nil,
               let repository = repository(id: repositoryID),
               let worktree = worktrees(for: repositoryID).first(where: { $0.path == path })
-        else { return }
+        else { return .failed }
 
         guard !worktree.isPrimary else {
             notice = AppNotice(
                 title: "Repository Worktree Cannot Be Removed",
                 message: "Tamarin will not remove the repository's primary checkout."
             )
-            return
+            return .failed
         }
         guard sessions(for: path).isEmpty else {
             notice = AppNotice(
                 title: "Close Terminals First",
                 message: "Close every terminal in this worktree before removing it."
             )
-            return
+            return .failed
         }
 
         busyMessage = "Removing worktree…"
         defer { busyMessage = nil }
 
         do {
-            try await git.removeWorktree(repository: repository, path: worktree.url)
+            try await git.removeWorktree(
+                repository: repository,
+                path: worktree.url,
+                force: force
+            )
             setupStateByWorktree[path] = nil
             await refresh(repositoryID: repositoryID, reportErrors: false)
             if selectedWorktree?.path == path {
@@ -386,8 +401,12 @@ final class AppModel {
                     selectedWorktree = nil
                 }
             }
+            return .removed
+        } catch GitServiceError.worktreeRemovalRequiresForce(_, _) {
+            return .requiresForce
         } catch {
             present(error, title: "Could Not Remove Worktree")
+            return .failed
         }
     }
 
