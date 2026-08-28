@@ -14,6 +14,14 @@ struct AppNotice: Identifiable {
     let message: String
 }
 
+private enum AppKeyboardShortcut: Sendable {
+    case newTerminal
+    case closeTerminal
+    case quitApplication
+    case previousWorktree
+    case nextWorktree
+}
+
 enum SetupExecutionState: Equatable {
     case running
     case succeeded
@@ -41,6 +49,7 @@ final class AppModel {
     @ObservationIgnored private let git: GitService
     @ObservationIgnored private let setupRunner: SetupScriptRunner
     @ObservationIgnored private var hasStarted = false
+    @ObservationIgnored private var keyboardShortcutMonitor: Any?
 
     init(
         store: RepositoryStore = RepositoryStore(),
@@ -75,6 +84,7 @@ final class AppModel {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
+        installKeyboardShortcutMonitor()
 
         for repository in repositories {
             await refresh(repositoryID: repository.id, reportErrors: false)
@@ -95,6 +105,22 @@ final class AppModel {
 
     func sessions(for worktreePath: String) -> [TerminalTabSession] {
         terminalSessions.filter { $0.worktreePath == worktreePath }
+    }
+
+    var canCreateTerminal: Bool {
+        selectedWorktree != nil && selectedWorktreeInfo?.isPrunable != true
+    }
+
+    var canCloseActiveTerminal: Bool {
+        activeTerminalSession != nil
+    }
+
+    var canSelectNextWorktree: Bool {
+        orderedWorktreeSelections.count > 1
+    }
+
+    var canSelectPreviousWorktree: Bool {
+        orderedWorktreeSelections.count > 1
     }
 
     func defaultWorktreeRoot(for repository: RepositoryRecord) -> URL {
@@ -365,9 +391,44 @@ final class AppModel {
         }
     }
 
-    func selectWorktree(repositoryID: UUID, path: String) {
+    func selectWorktree(
+        repositoryID: UUID,
+        path: String,
+        requestTerminalFocus: Bool = true
+    ) {
         selectedWorktree = WorktreeSelection(repositoryID: repositoryID, path: path)
-        updateTerminalVisibility(requestFocus: true)
+        updateTerminalVisibility(requestFocus: requestTerminalFocus)
+    }
+
+    @discardableResult
+    func selectNextWorktree() -> Bool {
+        moveWorktreeSelection(by: 1)
+    }
+
+    @discardableResult
+    func selectPreviousWorktree() -> Bool {
+        moveWorktreeSelection(by: -1)
+    }
+
+    private func moveWorktreeSelection(by offset: Int) -> Bool {
+        let selections = orderedWorktreeSelections
+        guard selections.count > 1 else { return false }
+
+        let targetIndex: Int
+        if let selectedWorktree,
+           let currentIndex = selections.firstIndex(of: selectedWorktree)
+        {
+            targetIndex = (currentIndex + offset + selections.count) % selections.count
+        } else {
+            targetIndex = offset < 0 ? selections.count - 1 : 0
+        }
+
+        let selection = selections[targetIndex]
+        selectWorktree(
+            repositoryID: selection.repositoryID,
+            path: selection.path
+        )
+        return true
     }
 
     @discardableResult
@@ -436,6 +497,13 @@ final class AppModel {
         }
     }
 
+    @discardableResult
+    func closeActiveTerminal() -> Bool {
+        guard let session = activeTerminalSession else { return false }
+        closeTerminal(session.id)
+        return true
+    }
+
     func isActive(_ session: TerminalTabSession) -> Bool {
         selectedWorktree?.path == session.worktreePath
             && activeTerminalByWorktree[session.worktreePath] == session.id
@@ -463,6 +531,14 @@ final class AppModel {
         }
     }
 
+    private var orderedWorktreeSelections: [WorktreeSelection] {
+        repositories.flatMap { repository in
+            worktrees(for: repository.id).map { worktree in
+                WorktreeSelection(repositoryID: repository.id, path: worktree.path)
+            }
+        }
+    }
+
     private func updateTerminalVisibility(requestFocus: Bool) {
         var focusedTerminal: TerminalTabSession?
         for session in terminalSessions {
@@ -477,6 +553,87 @@ final class AppModel {
         Task { @MainActor [weak terminal = focusedTerminal.terminal] in
             await Task.yield()
             terminal?.requestFocus()
+        }
+    }
+
+    private var activeTerminalSession: TerminalTabSession? {
+        guard let worktreePath = selectedWorktree?.path,
+              let terminalID = activeTerminalByWorktree[worktreePath]
+        else { return nil }
+
+        return terminalSessions.first {
+            $0.id == terminalID && !detachingTerminalIDs.contains($0.id)
+        }
+    }
+
+    private func installKeyboardShortcutMonitor() {
+        guard keyboardShortcutMonitor == nil else { return }
+
+        keyboardShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            guard event.window?.sheetParent == nil else { return event }
+
+            let modifiers = event.modifierFlags.intersection([
+                .command,
+                .control,
+                .option,
+                .shift,
+            ])
+            let shortcut: AppKeyboardShortcut
+            if modifiers == [.command, .shift] {
+                switch event.keyCode {
+                case 30: shortcut = .nextWorktree
+                case 33: shortcut = .previousWorktree
+                default: return event
+                }
+            } else if modifiers == .command,
+                      let key = event.charactersIgnoringModifiers?.lowercased()
+            {
+                switch key {
+                case "t": shortcut = .newTerminal
+                case "w": shortcut = .closeTerminal
+                case "q": shortcut = .quitApplication
+                default: return event
+                }
+            } else {
+                return event
+            }
+
+            let isRepeat = event.isARepeat
+            let consumed = MainActor.assumeIsolated {
+                guard let self else { return false }
+                return self.handleKeyboardShortcut(shortcut, isRepeat: isRepeat)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    private func handleKeyboardShortcut(
+        _ shortcut: AppKeyboardShortcut,
+        isRepeat: Bool
+    ) -> Bool {
+        guard !isRepeat else { return true }
+
+        switch shortcut {
+        case .newTerminal:
+            guard canCreateTerminal else { return true }
+            _ = createTerminal()
+            return true
+
+        case .closeTerminal:
+            return closeActiveTerminal()
+
+        case .quitApplication:
+            NSApplication.shared.terminate(nil)
+            return true
+
+        case .previousWorktree:
+            _ = selectPreviousWorktree()
+            return true
+
+        case .nextWorktree:
+            _ = selectNextWorktree()
+            return true
         }
     }
 

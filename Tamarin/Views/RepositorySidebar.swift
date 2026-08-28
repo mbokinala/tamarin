@@ -11,6 +11,7 @@ struct RepositorySidebar: View {
 
     @State private var hoveredWorktree: WorktreeSelection?
     @State private var addRepositoryHovered = false
+    @FocusState private var worktreeNavigationFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,19 +28,30 @@ struct RepositorySidebar: View {
     }
 
     private var repositoryList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(model.repositories) { repository in
-                    VStack(alignment: .leading, spacing: 2) {
-                        repositoryHeader(repository)
-                        repositoryWorktrees(repository)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(model.repositories) { repository in
+                        VStack(alignment: .leading, spacing: 2) {
+                            repositoryHeader(repository)
+                            repositoryWorktrees(repository)
+                        }
                     }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
+            .scrollIndicators(.automatic)
+            .focusable()
+            .focused($worktreeNavigationFocused)
+            .focusEffectDisabled()
+            .onAppear { worktreeNavigationFocused = true }
+            .onMoveCommand(perform: moveWorktreeSelection)
+            .onChange(of: model.selectedWorktree) { _, selection in
+                guard worktreeNavigationFocused, let selection else { return }
+                proxy.scrollTo(selection, anchor: .center)
+            }
         }
-        .scrollIndicators(.automatic)
     }
 
     private var emptyState: some View {
@@ -176,9 +188,11 @@ struct RepositorySidebar: View {
         let hovered = hoveredWorktree == selection
 
         return Button {
+            worktreeNavigationFocused = true
             model.selectWorktree(
                 repositoryID: repository.id,
-                path: worktree.path
+                path: worktree.path,
+                requestTerminalFocus: false
             )
         } label: {
             HStack(spacing: 7) {
@@ -217,6 +231,7 @@ struct RepositorySidebar: View {
             }
         }
         .buttonStyle(.plain)
+        .focusable(false)
         .onHover { isHovering in
             if isHovering {
                 hoveredWorktree = selection
@@ -242,6 +257,7 @@ struct RepositorySidebar: View {
         .help("\(worktreeTitle(worktree))\n\(worktree.path)")
         .accessibilityLabel(worktreeTitle(worktree))
         .accessibilityValue(selected ? "Selected" : "")
+        .id(selection)
     }
 
     @ViewBuilder
@@ -297,5 +313,41 @@ struct RepositorySidebar: View {
             return "Detached · \(head.prefix(8))"
         }
         return worktree.branch ?? "Worktree"
+    }
+
+    private func moveWorktreeSelection(_ direction: MoveCommandDirection) {
+        let offset: Int
+        switch direction {
+        case .up:
+            offset = -1
+        case .down:
+            offset = 1
+        default:
+            return
+        }
+
+        let selections = model.repositories.flatMap { repository in
+            model.worktrees(for: repository.id).map { worktree in
+                WorktreeSelection(repositoryID: repository.id, path: worktree.path)
+            }
+        }
+        guard !selections.isEmpty else { return }
+
+        let targetIndex: Int
+        if let current = model.selectedWorktree,
+           let currentIndex = selections.firstIndex(of: current)
+        {
+            targetIndex = min(max(currentIndex + offset, 0), selections.count - 1)
+        } else {
+            targetIndex = offset < 0 ? selections.count - 1 : 0
+        }
+
+        let selection = selections[targetIndex]
+        guard selection != model.selectedWorktree else { return }
+        model.selectWorktree(
+            repositoryID: selection.repositoryID,
+            path: selection.path,
+            requestTerminalFocus: false
+        )
     }
 }

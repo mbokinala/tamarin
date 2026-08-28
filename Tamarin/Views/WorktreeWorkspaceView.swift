@@ -26,6 +26,7 @@ struct WorktreeWorkspaceView: View {
                     noSelectionView
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .alert("Rename Terminal", isPresented: $showingRename) {

@@ -37,6 +37,11 @@ final class TerminalTabSession: Identifiable {
             terminalConfiguration: TerminalConfiguration()
                 .windowPaddingX(10)
                 .windowPaddingY(8)
+                .custom("keybind", "super+t=unbind")
+                .custom("keybind", "super+w=unbind")
+                .custom("keybind", "super+q=unbind")
+                .custom("keybind", "super+shift+left_bracket=unbind")
+                .custom("keybind", "super+shift+right_bracket=unbind")
         )
         terminal.configuration = TerminalSurfaceOptions(
             backend: .exec,
