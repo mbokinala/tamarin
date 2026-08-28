@@ -5,6 +5,8 @@ import SwiftUI
 struct WorktreeWorkspaceView: View {
     @Environment(AppModel.self) private var model
     let addRepository: () -> Void
+    let isSidebarVisible: Bool
+    let toggleSidebar: () -> Void
 
     @State private var renameSessionID: UUID?
     @State private var renameText = ""
@@ -30,13 +32,7 @@ struct WorktreeWorkspaceView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))
         }
-        .background {
-            UnevenRoundedRectangle(
-                cornerRadii: RectangleCornerRadii(topLeading: 10),
-                style: .continuous
-            )
-            .fill(Color(nsColor: .windowBackgroundColor))
-        }
+        .background(Color(nsColor: .windowBackgroundColor))
         .alert("Rename Terminal", isPresented: $showingRename) {
             TextField("Terminal name", text: $renameText)
             Button("Cancel", role: .cancel) {}
@@ -78,6 +74,8 @@ struct WorktreeWorkspaceView: View {
            let worktree = model.selectedWorktreeInfo
         {
             HStack(spacing: 10) {
+                sidebarToggleButton
+
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -109,7 +107,8 @@ struct WorktreeWorkspaceView: View {
                     model.reveal(worktree.path)
                 } label: {
                     Image(systemName: "finder")
-                        .frame(width: 24, height: 24)
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
@@ -139,17 +138,34 @@ struct WorktreeWorkspaceView: View {
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.leading, isSidebarVisible ? 0 : 62)
             .frame(height: 44)
         } else {
             HStack {
+                sidebarToggleButton
+
                 Text("Worktree")
                     .font(.headline)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.horizontal, 16)
+            .padding(.leading, isSidebarVisible ? 0 : 62)
             .frame(height: 44)
         }
+    }
+
+    private var sidebarToggleButton: some View {
+        Button(action: toggleSidebar) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut("s", modifiers: [.command, .control])
+        .help(isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        .accessibilityLabel(isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
     }
 
     @ViewBuilder

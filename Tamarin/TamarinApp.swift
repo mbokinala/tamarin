@@ -37,8 +37,10 @@ struct TamarinApp: App {
             ContentView()
                 .environment(model)
                 .frame(minWidth: 820, minHeight: 560)
+                .background(WindowChromeConfigurator())
         }
         .defaultSize(width: 1220, height: 780)
+        .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandMenu("Worktree") {
@@ -69,5 +71,30 @@ struct TamarinApp: App {
                 .disabled(!model.canCloseActiveTerminal)
             }
         }
+    }
+}
+
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            configure(view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configure(nsView.window)
+        }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.toolbar?.showsBaselineSeparator = false
     }
 }

@@ -24,7 +24,6 @@ struct RepositorySidebar: View {
             Divider()
             addRepositoryButton
         }
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var repositoryList: some View {
@@ -68,15 +67,15 @@ struct RepositorySidebar: View {
         Button(action: addRepository) {
             HStack(spacing: 7) {
                 Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 16)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 18)
                 Text("Add Repository…")
-                    .font(.caption)
+                    .font(.body.weight(.medium))
                 Spacer(minLength: 0)
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
-            .frame(height: 28)
+            .frame(height: 32)
             .contentShape(Rectangle())
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -127,12 +126,12 @@ struct RepositorySidebar: View {
     private func repositoryHeader(_ repository: RepositoryRecord) -> some View {
         HStack(spacing: 7) {
             Image(systemName: "folder.fill")
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 16)
+                .frame(width: 18)
 
             Text(repository.name)
-                .font(.caption.weight(.semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -171,7 +170,7 @@ struct RepositorySidebar: View {
         }
         .controlSize(.small)
         .padding(.horizontal, 8)
-        .frame(height: 28)
+        .frame(height: 32)
         .contentShape(Rectangle())
         .help(repository.path)
     }
@@ -276,12 +275,12 @@ struct RepositorySidebar: View {
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
             }
-            .font(.callout)
+            .font(.body)
             .lineLimit(1)
             .truncationMode(.middle)
         } else {
             Text(worktreeTitle(worktree))
-                .font(.callout)
+                .font(.body)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)

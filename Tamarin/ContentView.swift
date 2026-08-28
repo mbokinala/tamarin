@@ -10,40 +10,48 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isSidebarVisible = true
+    @State private var sidebarWidth: CGFloat = 300
+    @State private var sidebarDragStartWidth: CGFloat?
     @State private var worktreeRepository: RepositoryRecord?
     @State private var settingsRepository: RepositoryRecord?
+
+    private let sidebarMinimumWidth: CGFloat = 250
+    private let sidebarMaximumWidth: CGFloat = 420
 
     var body: some View {
         @Bindable var model = model
 
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        HStack(spacing: 0) {
             RepositorySidebar(
                 addRepository: chooseRepository,
                 createWorktree: { worktreeRepository = $0 },
                 showSettings: { settingsRepository = $0 }
             )
-            .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 420)
-            .anchorPreference(
-                key: SidebarBoundsPreferenceKey.self,
-                value: .bounds,
-                transform: { $0 }
+            .frame(width: sidebarWidth)
+            .background(.regularMaterial)
+            .frame(
+                width: isSidebarVisible ? sidebarWidth : 0,
+                alignment: .trailing
             )
-        } detail: {
-            WorktreeWorkspaceView(addRepository: chooseRepository)
-        }
-        .overlayPreferenceValue(SidebarBoundsPreferenceKey.self) { sidebarBounds in
-            GeometryReader { proxy in
-                if let sidebarBounds {
-                    let frame = proxy[sidebarBounds]
-                    sidebarSeam(height: max(frame.height - 10, 0))
-                        .position(
-                            x: frame.maxX,
-                            y: frame.midY + 5
-                        )
-                }
-            }
-            .allowsHitTesting(false)
+            .clipped()
+            .allowsHitTesting(isSidebarVisible)
+            .accessibilityHidden(!isSidebarVisible)
+
+            sidebarDivider
+                .frame(width: isSidebarVisible ? 1 : 0)
+                .opacity(isSidebarVisible ? 1 : 0)
+                .allowsHitTesting(isSidebarVisible)
+
+            WorktreeWorkspaceView(
+                addRepository: chooseRepository,
+                isSidebarVisible: isSidebarVisible,
+                toggleSidebar: toggleSidebar
+            )
+            .frame(minWidth: 0, maxWidth: .infinity)
+            .layoutPriority(1)
+            .ignoresSafeArea(.container, edges: .top)
         }
         .task {
             await model.start()
@@ -81,25 +89,42 @@ struct ContentView: View {
         }
     }
 
-    private func sidebarSeam(height: CGFloat) -> some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0),
-                .init(
-                    color: Color(nsColor: .windowBackgroundColor).opacity(0.72),
-                    location: 0.32
-                ),
-                .init(color: Color(nsColor: .windowBackgroundColor), location: 0.5),
-                .init(
-                    color: Color(nsColor: .windowBackgroundColor).opacity(0.72),
-                    location: 0.68
-                ),
-                .init(color: .clear, location: 1),
-            ],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-        .frame(width: 18, height: height)
+    private var sidebarDivider: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .overlay {
+                Color.clear
+                    .frame(width: 10)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(
+                            minimumDistance: 0,
+                            coordinateSpace: .global
+                        )
+                        .onChanged { value in
+                            if sidebarDragStartWidth == nil {
+                                sidebarDragStartWidth = sidebarWidth
+                            }
+
+                            let proposedWidth =
+                                (sidebarDragStartWidth ?? sidebarWidth)
+                                + value.translation.width
+                            sidebarWidth = min(
+                                max(proposedWidth, sidebarMinimumWidth),
+                                sidebarMaximumWidth
+                            )
+                        }
+                        .onEnded { _ in
+                            sidebarDragStartWidth = nil
+                        }
+                    )
+            }
+    }
+
+    private func toggleSidebar() {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.24)) {
+            isSidebarVisible.toggle()
+        }
     }
 
     private func chooseRepository() {
@@ -118,17 +143,6 @@ struct ContentView: View {
                 await model.addRepository(at: url)
             }
         }
-    }
-}
-
-private struct SidebarBoundsPreferenceKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>?
-
-    static func reduce(
-        value: inout Anchor<CGRect>?,
-        nextValue: () -> Anchor<CGRect>?
-    ) {
-        value = nextValue() ?? value
     }
 }
 
