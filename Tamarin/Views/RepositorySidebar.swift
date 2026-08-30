@@ -11,6 +11,8 @@ struct RepositorySidebar: View {
 
     @State private var hoveredWorktree: WorktreeSelection?
     @State private var addRepositoryHovered = false
+    @State private var showingForceRemoveConfirmation = false
+    @State private var pendingForceRemoval: WorktreeSelection?
     @FocusState private var worktreeNavigationFocused: Bool
 
     var body: some View {
@@ -23,6 +25,27 @@ struct RepositorySidebar: View {
 
             Divider()
             addRepositoryButton
+        }
+        .alert(
+            "Force Remove Worktree?",
+            isPresented: $showingForceRemoveConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {
+                pendingForceRemoval = nil
+            }
+            Button("Force Remove", role: .destructive) {
+                guard let selection = pendingForceRemoval else { return }
+                pendingForceRemoval = nil
+                Task {
+                    await model.removeWorktree(
+                        repositoryID: selection.repositoryID,
+                        path: selection.path,
+                        force: true
+                    )
+                }
+            }
+        } message: {
+            Text("Git reports that this worktree can only be removed with force. This permanently deletes its uncommitted changes and untracked files. The branch is not deleted.")
         }
     }
 
@@ -186,50 +209,76 @@ struct RepositorySidebar: View {
         let selected = model.selectedWorktree == selection
         let hovered = hoveredWorktree == selection
 
-        return Button {
-            worktreeNavigationFocused = true
-            model.selectWorktree(
-                repositoryID: repository.id,
-                path: worktree.path,
-                requestTerminalFocus: false
-            )
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: worktreeIcon(worktree))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(selected ? Color.accentColor : .secondary)
-                    .frame(width: 16)
+        return HStack(spacing: 0) {
+            Button {
+                worktreeNavigationFocused = true
+                model.selectWorktree(
+                    repositoryID: repository.id,
+                    path: worktree.path,
+                    requestTerminalFocus: false
+                )
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: worktreeIcon(worktree))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(selected ? Color.accentColor : .secondary)
+                        .frame(width: 16)
 
-                worktreeName(worktree)
+                    worktreeName(worktree)
 
-                Spacer(minLength: 4)
+                    Spacer(minLength: 4)
 
-                let terminalCount = model.sessions(for: worktree.path).count
-                if terminalCount > 0 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "terminal")
-                        Text("\(terminalCount)")
-                            .monospacedDigit()
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-
-                if worktree.isLocked {
-                    Image(systemName: "lock.fill")
+                    let terminalCount = model.sessions(for: worktree.path).count
+                    if terminalCount > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "terminal")
+                            Text("\(terminalCount)")
+                                .monospacedDigit()
+                        }
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    }
+
+                    if worktree.isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .padding(.leading, 8)
+                .padding(.trailing, worktree.isPrimary ? 8 : 4)
+                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .contentShape(Rectangle())
-            .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(rowBackground(selected: selected, hovered: hovered))
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("\(worktreeTitle(worktree))\n\(worktree.path)")
+            .accessibilityLabel(worktreeTitle(worktree))
+            .accessibilityValue(selected ? "Selected" : "")
+
+            if !worktree.isPrimary {
+                Button(role: .destructive) {
+                    removeWorktree(selection)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10, weight: .medium))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(!model.sessions(for: worktree.path).isEmpty || worktree.isLocked)
+                .help(removalHelp(worktree))
+                .accessibilityLabel("Remove \(worktreeTitle(worktree))")
+                .padding(.trailing, 2)
             }
         }
-        .buttonStyle(.plain)
+        .frame(height: 28)
+        .contentShape(Rectangle())
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(rowBackground(selected: selected, hovered: hovered))
+        }
         .focusable(false)
         .onHover { isHovering in
             if isHovering {
@@ -253,9 +302,6 @@ struct RepositorySidebar: View {
                 NSPasteboard.general.setString(worktree.path, forType: .string)
             }
         }
-        .help("\(worktreeTitle(worktree))\n\(worktree.path)")
-        .accessibilityLabel(worktreeTitle(worktree))
-        .accessibilityValue(selected ? "Selected" : "")
         .id(selection)
     }
 
@@ -312,6 +358,27 @@ struct RepositorySidebar: View {
             return "Detached · \(head.prefix(8))"
         }
         return worktree.branch ?? "Worktree"
+    }
+
+    private func removeWorktree(_ selection: WorktreeSelection) {
+        Task {
+            let result = await model.removeWorktree(
+                repositoryID: selection.repositoryID,
+                path: selection.path
+            )
+            if case .requiresForce = result {
+                pendingForceRemoval = selection
+                showingForceRemoveConfirmation = true
+            }
+        }
+    }
+
+    private func removalHelp(_ worktree: WorktreeInfo) -> String {
+        if worktree.isLocked { return "This worktree is locked" }
+        if !model.sessions(for: worktree.path).isEmpty {
+            return "Close every terminal before removing this worktree"
+        }
+        return "Remove worktree"
     }
 
     private func moveWorktreeSelection(_ direction: MoveCommandDirection) {
