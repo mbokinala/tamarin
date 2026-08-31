@@ -102,6 +102,7 @@ jobs:
           security import "$certificate_path" \
             -k "$keychain_path" \
             -P "$CERTIFICATE_PASSWORD" \
+            -A \
             -t cert \
             -f pkcs12
           security set-key-partition-list \
