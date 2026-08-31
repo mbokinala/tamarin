@@ -129,7 +129,6 @@ The tag must use the `vMAJOR.MINOR.PATCH` format. The workflow uses this value f
 The workflow publishes these release assets:
 
 - `Tamarin-MAJOR.MINOR.PATCH.dmg`
-- `Tamarin-MAJOR.MINOR.PATCH.dSYM.zip`
 - `appcast.xml`
 
 The disk image contains `Tamarin.app` and an `Applications` link.

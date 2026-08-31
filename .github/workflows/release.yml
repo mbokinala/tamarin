@@ -49,7 +49,6 @@ jobs:
 
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "DMG_NAME=Tamarin-$version.dmg" >> "$GITHUB_ENV"
-          echo "DSYM_NAME=Tamarin-$version.dSYM.zip" >> "$GITHUB_ENV"
 
       - name: Make sure that the release secrets exist
         shell: bash
@@ -230,14 +229,6 @@ jobs:
           codesign --display --verbose=4 "$app_path" 2>&1 \
             | grep -q "Authority=Developer ID Application"
 
-          dsym_path="$archive_path/dSYMs/Tamarin.app.dSYM"
-          if [[ -d "$dsym_path" ]]; then
-            ditto -c -k --sequesterRsrc --keepParent \
-              "$dsym_path" \
-              "$RUNNER_TEMP/$DSYM_NAME"
-            echo "DSYM_PATH=$RUNNER_TEMP/$DSYM_NAME" >> "$GITHUB_ENV"
-          fi
-
           echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
 
       - name: Create the Tamarin disk image
@@ -362,13 +353,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_assets=("$RELEASE_DMG" "$APPCAST_PATH")
-          if [[ -n "${DSYM_PATH:-}" ]]; then
-            release_assets+=("$DSYM_PATH")
-          fi
-
           gh release create "$GITHUB_REF_NAME" \
-            "${release_assets[@]}" \
+            "$RELEASE_DMG" \
+            "$APPCAST_PATH" \
             --verify-tag \
             --latest \
             --title "Tamarin $VERSION" \
