@@ -10,6 +10,8 @@ public nonisolated struct RepositoryRecord: Identifiable, Codable, Hashable, Sen
     public var name: String
     public var path: String
     public var worktreeRoot: String?
+    /// Legacy storage used by releases before repository lifecycle scripts
+    /// moved to `.tamarin/config.toml`. New values are not persisted here.
     public var setupScript: String?
 
     public init(
@@ -48,6 +50,27 @@ public nonisolated struct RepositoryRecord: Identifiable, Codable, Hashable, Sen
 
     public var worktreeRootURL: URL? {
         worktreeRoot.map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+}
+
+/// Scripts shared by every Tamarin worktree for a repository.
+///
+/// The configuration is stored in `.tamarin/config.toml` in the repository's
+/// primary checkout so it can be versioned with the project when desired.
+public nonisolated struct RepositoryLifecycleConfiguration: Equatable, Sendable {
+    public var setupScript: String?
+    public var teardownScript: String?
+
+    public init(setupScript: String? = nil, teardownScript: String? = nil) {
+        self.setupScript = Self.nonEmpty(setupScript)
+        self.teardownScript = Self.nonEmpty(teardownScript)
+    }
+
+    private static func nonEmpty(_ script: String?) -> String? {
+        guard let script,
+              !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return script
     }
 }
 

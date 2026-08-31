@@ -17,6 +17,7 @@ struct CreateWorktreeSheet: View {
     @State private var branchMode: WorktreeBranchMode = .existing
     @State private var newBranchName = ""
     @State private var isLoading = true
+    @State private var hasSetupScript = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -164,9 +165,9 @@ struct CreateWorktreeSheet: View {
                     }
                     .font(.caption)
 
-                    if repository.setupScript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                    if hasSetupScript {
                         Label(
-                            "The repository setup script will run after Git creates the worktree.",
+                            "The setup script will run after Git creates the worktree. Its output will open in a terminal tab.",
                             systemImage: "terminal"
                         )
                         .font(.caption)
@@ -277,6 +278,13 @@ struct CreateWorktreeSheet: View {
 
     private func loadBranches() async {
         isLoading = true
+        if let repository,
+           let configuration = try? model.lifecycleConfiguration(for: repository)
+        {
+            hasSetupScript = configuration.setupScript != nil
+        } else {
+            hasSetupScript = false
+        }
         branches = await model.loadBranches(repositoryID: repositoryID)
         isLoading = false
         if selectedBranch == nil

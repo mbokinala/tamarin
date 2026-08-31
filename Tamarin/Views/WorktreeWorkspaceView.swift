@@ -209,7 +209,11 @@ struct WorktreeWorkspaceView: View {
                 model.selectTerminal(session.id)
             } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: session.isExited ? "xmark.circle" : "terminal")
+                    Image(
+                        systemName: session.isSetupOutput
+                            ? "doc.text"
+                            : (session.isExited ? "xmark.circle" : "terminal")
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

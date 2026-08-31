@@ -3,6 +3,55 @@ import Foundation
 import GhosttyTerminal
 import Observation
 
+enum TerminalTabKind: Equatable {
+    case shell
+    case setupOutput
+
+    func defaultTitle(ordinal: Int) -> String {
+        switch self {
+        case .shell: "Terminal \(ordinal)"
+        case .setupOutput: "Setup Output"
+        }
+    }
+}
+
+/// Thread-safe bridge from process pipe chunks into an in-memory Ghostty
+/// session. It also converts pipe-style LF line endings into terminal CRLF.
+nonisolated final class SetupOutputSession: @unchecked Sendable {
+    let terminalSession: InMemoryTerminalSession
+
+    private let lock = NSLock()
+    private var previousByte: UInt8?
+
+    init() {
+        terminalSession = InMemoryTerminalSession(
+            write: { _ in },
+            resize: { _ in }
+        )
+    }
+
+    func receive(_ string: String) {
+        receive(Data(string.utf8))
+    }
+
+    func receive(_ data: Data) {
+        guard !data.isEmpty else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+        var converted = Data()
+        converted.reserveCapacity(data.count + data.count / 20)
+        for byte in data {
+            if byte == 0x0A, previousByte != 0x0D {
+                converted.append(0x0D)
+            }
+            converted.append(byte)
+            previousByte = byte
+        }
+        terminalSession.receive(converted)
+    }
+}
+
 @MainActor
 @Observable
 final class TerminalTabSession: Identifiable {
@@ -10,6 +59,7 @@ final class TerminalTabSession: Identifiable {
     let repositoryID: UUID
     let worktreePath: String
     let ordinal: Int
+    let kind: TerminalTabKind
 
     var customTitle: String?
     var generatedTitle: String
@@ -17,6 +67,7 @@ final class TerminalTabSession: Identifiable {
     var exitedWithProcessAlive = false
 
     @ObservationIgnored let terminal: TerminalViewState
+    @ObservationIgnored private let setupOutputSession: SetupOutputSession?
     @ObservationIgnored private var cancellables: Set<AnyCancellable> = []
 
     init(
@@ -24,14 +75,30 @@ final class TerminalTabSession: Identifiable {
         repositoryID: UUID,
         worktreePath: String,
         ordinal: Int,
-        customTitle: String? = nil
+        customTitle: String? = nil,
+        kind: TerminalTabKind = .shell,
+        setupOutputSession: SetupOutputSession? = nil
     ) {
         self.id = id
         self.repositoryID = repositoryID
         self.worktreePath = worktreePath
         self.ordinal = ordinal
+        self.kind = kind
         self.customTitle = customTitle
-        generatedTitle = "Terminal \(ordinal)"
+        generatedTitle = kind.defaultTitle(ordinal: ordinal)
+
+        let outputSession: SetupOutputSession?
+        let backend: TerminalSessionBackend
+        switch kind {
+        case .shell:
+            outputSession = nil
+            backend = .exec
+        case .setupOutput:
+            let session = setupOutputSession ?? SetupOutputSession()
+            outputSession = session
+            backend = .inMemory(session.terminalSession)
+        }
+        self.setupOutputSession = outputSession
 
         let terminal = TerminalViewState(
             terminalConfiguration: TerminalConfiguration()
@@ -44,7 +111,7 @@ final class TerminalTabSession: Identifiable {
                 .custom("keybind", "super+shift+right_bracket=unbind")
         )
         terminal.configuration = TerminalSurfaceOptions(
-            backend: .exec,
+            backend: backend,
             workingDirectory: worktreePath,
             envVars: [
                 "TAMARIN_TERMINAL_ID": id.uuidString,
@@ -79,7 +146,11 @@ final class TerminalTabSession: Identifiable {
         if let customTitle, !customTitle.isEmpty {
             return customTitle
         }
-        return "Terminal \(ordinal)"
+        return kind.defaultTitle(ordinal: ordinal)
+    }
+
+    var isSetupOutput: Bool {
+        kind == .setupOutput
     }
 
     func rename(to title: String) {

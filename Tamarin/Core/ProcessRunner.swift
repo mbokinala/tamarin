@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 private nonisolated final class ProcessCaptureState: @unchecked Sendable {
@@ -88,7 +89,9 @@ public nonisolated struct ProcessRunner: Sendable {
         arguments: [String] = [],
         currentDirectoryURL: URL? = nil,
         environment: [String: String] = [:],
-        standardInput: Data? = nil
+        standardInput: Data? = nil,
+        standardOutputHandler: (@Sendable (Data) -> Void)? = nil,
+        standardErrorHandler: (@Sendable (Data) -> Void)? = nil
     ) async throws -> ProcessResult {
         try Task.checkCancellation()
 
@@ -140,7 +143,12 @@ public nonisolated struct ProcessRunner: Sendable {
             autoreleasepool {
                 defer { group.leave() }
                 captureState.setStdout(
-                    Result { try stdoutPipe.fileHandleForReading.readToEnd() ?? Data() }
+                    Result {
+                        try Self.readAll(
+                            from: stdoutPipe.fileHandleForReading,
+                            onChunk: standardOutputHandler
+                        )
+                    }
                 )
                 try? stdoutPipe.fileHandleForReading.close()
             }
@@ -151,7 +159,12 @@ public nonisolated struct ProcessRunner: Sendable {
             autoreleasepool {
                 defer { group.leave() }
                 captureState.setStderr(
-                    Result { try stderrPipe.fileHandleForReading.readToEnd() ?? Data() }
+                    Result {
+                        try Self.readAll(
+                            from: stderrPipe.fileHandleForReading,
+                            onChunk: standardErrorHandler
+                        )
+                    }
                 )
                 try? stderrPipe.fileHandleForReading.close()
             }
@@ -216,14 +229,18 @@ public nonisolated struct ProcessRunner: Sendable {
         arguments: [String] = [],
         currentDirectoryURL: URL? = nil,
         environment: [String: String] = [:],
-        standardInput: Data? = nil
+        standardInput: Data? = nil,
+        standardOutputHandler: (@Sendable (Data) -> Void)? = nil,
+        standardErrorHandler: (@Sendable (Data) -> Void)? = nil
     ) async throws -> ProcessResult {
         let result = try await run(
             executableURL: executableURL,
             arguments: arguments,
             currentDirectoryURL: currentDirectoryURL,
             environment: environment,
-            standardInput: standardInput
+            standardInput: standardInput,
+            standardOutputHandler: standardOutputHandler,
+            standardErrorHandler: standardErrorHandler
         )
 
         guard result.succeeded else {
@@ -236,6 +253,31 @@ public nonisolated struct ProcessRunner: Sendable {
         }
 
         return result
+    }
+
+    private static func readAll(
+        from handle: FileHandle,
+        onChunk: (@Sendable (Data) -> Void)?
+    ) throws -> Data {
+        var output = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        let descriptor = handle.fileDescriptor
+
+        while true {
+            let bytesRead = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+            }
+            if bytesRead == 0 { break }
+            if bytesRead < 0 {
+                if errno == EINTR { continue }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+
+            let chunk = Data(buffer.prefix(bytesRead))
+            output.append(chunk)
+            onChunk?(chunk)
+        }
+        return output
     }
 
     private static func preferredErrorOutput(from result: ProcessResult) -> String {

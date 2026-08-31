@@ -66,17 +66,21 @@ final class AppModel {
     @ObservationIgnored private let store: RepositoryStore
     @ObservationIgnored private let git: GitService
     @ObservationIgnored private let setupRunner: SetupScriptRunner
+    @ObservationIgnored private let configurationStore: RepositoryConfigurationStore
+    @ObservationIgnored private var teardownPreparedForForceRemoval: Set<String> = []
     @ObservationIgnored private var hasStarted = false
     @ObservationIgnored private var keyboardShortcutMonitor: Any?
 
     init(
         store: RepositoryStore = RepositoryStore(),
         git: GitService = GitService(),
-        setupRunner: SetupScriptRunner = SetupScriptRunner()
+        setupRunner: SetupScriptRunner = SetupScriptRunner(),
+        configurationStore: RepositoryConfigurationStore = RepositoryConfigurationStore()
     ) {
         self.store = store
         self.git = git
         self.setupRunner = setupRunner
+        self.configurationStore = configurationStore
 
         do {
             repositories = try store.load()
@@ -156,6 +160,31 @@ final class AppModel {
         repository.worktreeRootURL ?? defaultWorktreeRoot(for: repository)
     }
 
+    /// The primary checkout owns repository-scoped settings even when the
+    /// repository was originally added from one of its linked worktrees.
+    func baseRepositoryURL(for repository: RepositoryRecord) -> URL {
+        worktrees(for: repository.id).first(where: \.isPrimary)?.url
+            ?? repository.repositoryURL
+    }
+
+    func configurationFileURL(for repository: RepositoryRecord) -> URL {
+        configurationStore.fileURL(in: baseRepositoryURL(for: repository))
+    }
+
+    func lifecycleConfiguration(
+        for repository: RepositoryRecord
+    ) throws -> RepositoryLifecycleConfiguration {
+        if let configuration = try configurationStore.load(
+            from: baseRepositoryURL(for: repository)
+        ) {
+            return configuration
+        }
+
+        // Let existing users migrate their setup script the next time they save
+        // Repository Settings. New scripts are written only to the TOML file.
+        return RepositoryLifecycleConfiguration(setupScript: repository.setupScript)
+    }
+
     func addRepository(at selectedURL: URL) async {
         guard busyMessage == nil else { return }
         busyMessage = "Adding repository…"
@@ -191,17 +220,32 @@ final class AppModel {
         }
     }
 
+    @discardableResult
     func updateRepository(
         id: UUID,
         name: String,
         worktreeRoot: String,
-        setupScript: String
-    ) {
-        guard let index = repositories.firstIndex(where: { $0.id == id }) else { return }
+        setupScript: String,
+        teardownScript: String
+    ) -> Bool {
+        guard let index = repositories.firstIndex(where: { $0.id == id }) else { return false }
 
         let cleanedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedRoot = worktreeRoot.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanedScript = setupScript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lifecycleConfiguration = RepositoryLifecycleConfiguration(
+            setupScript: setupScript,
+            teardownScript: teardownScript
+        )
+
+        do {
+            try configurationStore.save(
+                lifecycleConfiguration,
+                in: baseRepositoryURL(for: repositories[index])
+            )
+        } catch {
+            present(error, title: "Could Not Save Repository Configuration")
+            return false
+        }
 
         repositories[index].name = cleanedName.isEmpty
             ? repositories[index].repositoryURL.lastPathComponent
@@ -212,9 +256,9 @@ final class AppModel {
                 fileURLWithPath: NSString(string: cleanedRoot).expandingTildeInPath,
                 isDirectory: true
             ).standardizedFileURL.path
-        repositories[index].setupScript = cleanedScript.isEmpty ? nil : setupScript
+        repositories[index].setupScript = nil
         repositories.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        persistRepositories()
+        return persistRepositories()
     }
 
     func forgetRepository(id: UUID) {
@@ -327,12 +371,23 @@ final class AppModel {
         let repositoryURL = repository.repositoryURL
             .resolvingSymlinksInPath()
             .standardizedFileURL
+        let baseRepositoryURL = baseRepositoryURL(for: repository)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
 
         guard !Self.pathsContainEachOther(root.path, repositoryURL.path) else {
             notice = AppNotice(
                 title: "Choose a Different Worktree Directory",
                 message: "The worktree directory and repository cannot contain one another. Change the directory in Repository Settings."
             )
+            return false
+        }
+
+        let lifecycleConfiguration: RepositoryLifecycleConfiguration
+        do {
+            lifecycleConfiguration = try self.lifecycleConfiguration(for: repository)
+        } catch {
+            present(error, title: "Could Not Read Repository Configuration")
             return false
         }
 
@@ -377,39 +432,89 @@ final class AppModel {
         await refresh(repositoryID: repositoryID, reportErrors: false)
         selectWorktree(repositoryID: repositoryID, path: createdWorktree.path)
 
-        var setupFailure: String?
-        if let script = repository.setupScript,
-           !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        {
+        if let script = lifecycleConfiguration.setupScript {
             busyMessage = "Running setup script…"
             setupStateByWorktree[createdWorktree.path] = .running
-            do {
-                let result = try await setupRunner.run(script: script, in: createdWorktree.url)
-                if result.succeeded {
-                    setupStateByWorktree[createdWorktree.path] = .succeeded
-                } else {
-                    let output = Self.processOutput(result)
-                    setupFailure = output.isEmpty
-                        ? "The setup script exited with status \(result.terminationStatus)."
-                        : output
-                    setupStateByWorktree[createdWorktree.path] = .failed(setupFailure!)
-                }
-            } catch {
-                setupFailure = error.localizedDescription
-                setupStateByWorktree[createdWorktree.path] = .failed(error.localizedDescription)
+            let outputSession = SetupOutputSession()
+            outputSession.receive(Self.setupOutputHeader(worktreePath: createdWorktree.path))
+            _ = createSetupOutputTerminal(
+                repositoryID: repositoryID,
+                worktreePath: createdWorktree.path,
+                outputSession: outputSession
+            )
+
+            Task { @MainActor [weak self] in
+                await self?.finishSetup(
+                    script: script,
+                    repositoryID: repositoryID,
+                    baseRepositoryURL: baseRepositoryURL,
+                    worktree: createdWorktree,
+                    outputSession: outputSession
+                )
             }
+            return true
         }
 
         busyMessage = nil
         _ = createTerminal(repositoryID: repositoryID, worktreePath: createdWorktree.path)
+        return true
+    }
 
-        if let setupFailure {
+    private func finishSetup(
+        script: String,
+        repositoryID: UUID,
+        baseRepositoryURL: URL,
+        worktree: WorktreeInfo,
+        outputSession: SetupOutputSession
+    ) async {
+        do {
+            let result = try await setupRunner.runCapturingResult(
+                script: script,
+                phase: .setup,
+                baseRepositoryDirectory: baseRepositoryURL,
+                worktreeDirectory: worktree.url,
+                standardOutputHandler: { outputSession.receive($0) },
+                standardErrorHandler: { outputSession.receive($0) }
+            )
+            outputSession.receive(Self.setupOutputFooter(result: result))
+
+            if result.succeeded {
+                setupStateByWorktree[worktree.path] = .succeeded
+            } else {
+                let failure = SetupScriptError.lifecycleFailed(
+                    phase: .setup,
+                    status: result.terminationStatus,
+                    detail: Self.processErrorDetail(result)
+                )
+                setupStateByWorktree[worktree.path] = .failed(
+                    failure.localizedDescription
+                )
+                notice = AppNotice(
+                    title: "Worktree Created; Setup Failed",
+                    message: "The setup script exited with status \(result.terminationStatus). Review the Setup Output terminal tab for its log."
+                )
+            }
+        } catch {
+            outputSession.receive(Self.setupOutputFooter(error: error))
+            setupStateByWorktree[worktree.path] = .failed(error.localizedDescription)
             notice = AppNotice(
                 title: "Worktree Created; Setup Failed",
-                message: Self.limited(setupFailure)
+                message: "The setup script could not run. Review the Setup Output terminal tab for details."
             )
         }
-        return true
+
+        busyMessage = nil
+
+        let hasShell = sessions(for: worktree.path).contains { !$0.isSetupOutput }
+        guard !hasShell else { return }
+
+        let shouldActivate = selectedWorktree?.path == worktree.path
+            && activeTerminalByWorktree[worktree.path] == nil
+        _ = createTerminal(
+            repositoryID: repositoryID,
+            worktreePath: worktree.path,
+            activate: shouldActivate
+        )
     }
 
     @discardableResult
@@ -430,12 +535,53 @@ final class AppModel {
             )
             return .failed
         }
+        guard !worktree.isLocked else {
+            notice = AppNotice(
+                title: "Locked Worktree Cannot Be Removed",
+                message: worktree.lockReason ?? "Unlock this worktree before removing it."
+            )
+            return .failed
+        }
         guard sessions(for: path).isEmpty else {
             notice = AppNotice(
                 title: "Close Terminals First",
                 message: "Close every terminal in this worktree before removing it."
             )
             return .failed
+        }
+
+        let teardownAlreadyRan = force
+            && teardownPreparedForForceRemoval.remove(path) != nil
+        if !force {
+            // A new removal request reruns teardown, including after a force
+            // confirmation was previously cancelled.
+            teardownPreparedForForceRemoval.remove(path)
+        }
+
+        if !teardownAlreadyRan {
+            let lifecycleConfiguration: RepositoryLifecycleConfiguration
+            do {
+                lifecycleConfiguration = try self.lifecycleConfiguration(for: repository)
+            } catch {
+                present(error, title: "Could Not Read Repository Configuration")
+                return .failed
+            }
+
+            if let script = lifecycleConfiguration.teardownScript {
+                busyMessage = "Running teardown script…"
+                do {
+                    _ = try await setupRunner.run(
+                        script: script,
+                        phase: .teardown,
+                        baseRepositoryDirectory: baseRepositoryURL(for: repository),
+                        worktreeDirectory: worktree.url
+                    )
+                } catch {
+                    busyMessage = nil
+                    present(error, title: "Could Not Teardown Worktree")
+                    return .failed
+                }
+            }
         }
 
         busyMessage = "Removing worktree…"
@@ -447,6 +593,7 @@ final class AppModel {
                 path: worktree.url,
                 force: force
             )
+            teardownPreparedForForceRemoval.remove(path)
             setupStateByWorktree[path] = nil
             await refresh(repositoryID: repositoryID, reportErrors: false)
             if selectedWorktree?.path == path {
@@ -458,6 +605,9 @@ final class AppModel {
             }
             return .removed
         } catch GitServiceError.worktreeRemovalRequiresForce(_, _) {
+            // Teardown succeeded. A force retry can proceed without running it
+            // a second time.
+            teardownPreparedForForceRemoval.insert(path)
             return .requiresForce
         } catch {
             present(error, title: "Could Not Remove Worktree")
@@ -508,7 +658,8 @@ final class AppModel {
     @discardableResult
     func createTerminal(
         repositoryID: UUID? = nil,
-        worktreePath: String? = nil
+        worktreePath: String? = nil,
+        activate: Bool = true
     ) -> TerminalTabSession? {
         let repositoryID = repositoryID ?? selectedWorktree?.repositoryID
         let worktreePath = worktreePath ?? selectedWorktree?.path
@@ -521,11 +672,42 @@ final class AppModel {
             return nil
         }
 
-        let nextOrdinal = (sessions(for: worktreePath).map(\.ordinal).max() ?? 0) + 1
+        let nextOrdinal = (
+            sessions(for: worktreePath)
+                .filter { !$0.isSetupOutput }
+                .map(\.ordinal)
+                .max() ?? 0
+        ) + 1
         let session = TerminalTabSession(
             repositoryID: repositoryID,
             worktreePath: worktreePath,
             ordinal: nextOrdinal
+        )
+        terminalSessions.append(session)
+        if activate {
+            activeTerminalByWorktree[worktreePath] = session.id
+            selectedWorktree = WorktreeSelection(repositoryID: repositoryID, path: worktreePath)
+        } else if activeTerminalByWorktree[worktreePath] == nil {
+            activeTerminalByWorktree[worktreePath] = session.id
+        }
+        updateTerminalVisibility(requestFocus: activate)
+        return session
+    }
+
+    @discardableResult
+    private func createSetupOutputTerminal(
+        repositoryID: UUID,
+        worktreePath: String,
+        outputSession: SetupOutputSession
+    ) -> TerminalTabSession? {
+        guard FileManager.default.fileExists(atPath: worktreePath) else { return nil }
+
+        let session = TerminalTabSession(
+            repositoryID: repositoryID,
+            worktreePath: worktreePath,
+            ordinal: 0,
+            kind: .setupOutput,
+            setupOutputSession: outputSession
         )
         terminalSessions.append(session)
         activeTerminalByWorktree[worktreePath] = session.id
@@ -730,11 +912,14 @@ final class AppModel {
         return candidate
     }
 
-    private func persistRepositories() {
+    @discardableResult
+    private func persistRepositories() -> Bool {
         do {
             try store.save(repositories)
+            return true
         } catch {
             present(error, title: "Could Not Save Repository Settings")
+            return false
         }
     }
 
@@ -758,11 +943,32 @@ final class AppModel {
         return left.starts(with: right) || right.starts(with: left)
     }
 
-    private static func processOutput(_ result: ProcessResult) -> String {
-        [result.stdout, result.stderr]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
+    private static func processErrorDetail(_ result: ProcessResult) -> String {
+        let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stderr.isEmpty { return stderr }
+        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stdout.isEmpty ? "The shell did not provide an error message." : stdout
+    }
+
+    private static func setupOutputHeader(worktreePath: String) -> String {
+        "\u{001B}[1mTamarin Setup\u{001B}[0m\nWorktree: \(worktreePath)\n\n"
+    }
+
+    private static func setupOutputFooter(result: ProcessResult) -> String {
+        var footer = result.stdoutData.isEmpty && result.stderrData.isEmpty
+            ? "No output.\n"
+            : ""
+        footer += "\n\u{001B}[0m"
+        if result.succeeded {
+            footer += "\u{001B}[1;32mSetup completed successfully (exit status 0).\u{001B}[0m\n"
+        } else {
+            footer += "\u{001B}[1;31mSetup failed with exit status \(result.terminationStatus).\u{001B}[0m\n"
+        }
+        return footer
+    }
+
+    private static func setupOutputFooter(error: Error) -> String {
+        "\n\u{001B}[1;31mSetup could not run.\u{001B}[0m\n\(error.localizedDescription)\n"
     }
 
     private static func limited(_ text: String) -> String {
