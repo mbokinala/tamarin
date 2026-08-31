@@ -128,9 +128,11 @@ The tag must use the `vMAJOR.MINOR.PATCH` format. The workflow uses this value f
 
 The workflow publishes these release assets:
 
-- `Tamarin-MAJOR.MINOR.PATCH.zip`
+- `Tamarin-MAJOR.MINOR.PATCH.dmg`
 - `Tamarin-MAJOR.MINOR.PATCH.dSYM.zip`
 - `appcast.xml`
+
+The disk image contains `Tamarin.app` and an `Applications` link.
 
 The workflow publishes full updates. It does not create delta updates from older release archives.
 
@@ -149,9 +151,10 @@ The release workflow does these operations:
 1. Imports the Developer ID Application certificate into a temporary keychain.
 2. Gets the Sparkle public key from `SPARKLE_PRIVATE_KEY`.
 3. Archives and exports the app with Developer ID signing.
-4. Sends the app to the Apple notarization service.
-5. Adds the notarization ticket to the app.
-6. Creates and signs the Sparkle appcast.
-7. Creates a GitHub release with automatic release notes.
+4. Creates and signs a disk image.
+5. Sends the disk image to the Apple notarization service.
+6. Adds the notarization ticket to the disk image.
+7. Creates and signs the Sparkle appcast.
+8. Creates a GitHub release with automatic release notes.
 
 The workflow removes the temporary keychain at the end of the job.

@@ -22,6 +22,7 @@ jobs:
       SCHEME: Tamarin
       TEAM_ID: 4XUDFLD5RY
       SPARKLE_ACCOUNT: com.mbokinala.Tamarin
+      DMG_IDENTIFIER: com.mbokinala.Tamarin.dmg
 
     steps:
       - name: Check out the release tag
@@ -47,7 +48,7 @@ jobs:
           fi
 
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "ARCHIVE_NAME=Tamarin-$version.zip" >> "$GITHUB_ENV"
+          echo "DMG_NAME=Tamarin-$version.dmg" >> "$GITHUB_ENV"
           echo "DSYM_NAME=Tamarin-$version.dSYM.zip" >> "$GITHUB_ENV"
 
       - name: Make sure that the release secrets exist
@@ -239,6 +240,38 @@ jobs:
 
           echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
 
+      - name: Create the Tamarin disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dmg_contents_path="$RUNNER_TEMP/DMG"
+          dmg_path="$RUNNER_TEMP/$DMG_NAME"
+          mkdir -p "$dmg_contents_path"
+
+          ditto "$APP_PATH" "$dmg_contents_path/Tamarin.app"
+          codesign --verify --deep --strict --verbose=2 \
+            "$dmg_contents_path/Tamarin.app"
+          ln -s /Applications "$dmg_contents_path/Applications"
+
+          hdiutil create \
+            -volname Tamarin \
+            -srcfolder "$dmg_contents_path" \
+            -format UDZO \
+            -ov \
+            "$dmg_path"
+
+          hdiutil verify "$dmg_path"
+          codesign \
+            --force \
+            --sign "Developer ID Application" \
+            --timestamp \
+            --identifier "$DMG_IDENTIFIER" \
+            "$dmg_path"
+          codesign --verify --verbose=2 "$dmg_path"
+
+          echo "DMG_PATH=$dmg_path" >> "$GITHUB_ENV"
+
       - name: Notarize Tamarin
         shell: bash
         env:
@@ -249,14 +282,10 @@ jobs:
           set -euo pipefail
 
           api_key_path="$RUNNER_TEMP/AuthKey_$API_KEY_ID.p8"
-          submission_path="$RUNNER_TEMP/Tamarin-notarization.zip"
-          trap 'rm -f "$api_key_path" "$submission_path"' EXIT
+          trap 'rm -f "$api_key_path"' EXIT
           umask 077
 
           printf '%s' "$API_KEY_BASE64" | base64 --decode > "$api_key_path"
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$APP_PATH" \
-            "$submission_path"
 
           notary_credentials=(
             --key "$api_key_path"
@@ -266,15 +295,20 @@ jobs:
             notary_credentials+=(--issuer "$API_ISSUER_ID")
           fi
 
-          xcrun notarytool submit "$submission_path" \
+          xcrun notarytool submit "$DMG_PATH" \
             "${notary_credentials[@]}" \
             --wait \
             --timeout 45m
 
-          xcrun stapler staple "$APP_PATH"
-          xcrun stapler validate "$APP_PATH"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+          codesign --verify --verbose=2 "$DMG_PATH"
+          spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "$DMG_PATH"
 
       - name: Create the signed Sparkle appcast
         shell: bash
@@ -285,14 +319,13 @@ jobs:
           set -euo pipefail
 
           updates_path="$RUNNER_TEMP/Updates"
-          archive_path="$updates_path/$ARCHIVE_NAME"
+          dmg_path="$updates_path/$DMG_NAME"
           release_notes_path="$updates_path/Tamarin-$VERSION.md"
           appcast_path="$updates_path/appcast.xml"
           mkdir -p "$updates_path"
 
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$APP_PATH" \
-            "$archive_path"
+          ditto "$DMG_PATH" "$dmg_path"
+          codesign --verify --verbose=2 "$dmg_path"
 
           gh api \
             --method POST \
@@ -318,7 +351,7 @@ jobs:
                 --ed-key-file - \
                 "$appcast_path"
 
-          echo "RELEASE_ARCHIVE=$archive_path" >> "$GITHUB_ENV"
+          echo "RELEASE_DMG=$dmg_path" >> "$GITHUB_ENV"
           echo "RELEASE_NOTES=$release_notes_path" >> "$GITHUB_ENV"
           echo "APPCAST_PATH=$appcast_path" >> "$GITHUB_ENV"
 
@@ -329,7 +362,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_assets=("$RELEASE_ARCHIVE" "$APPCAST_PATH")
+          release_assets=("$RELEASE_DMG" "$APPCAST_PATH")
           if [[ -n "${DSYM_PATH:-}" ]]; then
             release_assets+=("$DSYM_PATH")
           fi
