@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Sparkle
 import SwiftUI
 
 @MainActor
@@ -31,6 +32,25 @@ final class TamarinAppDelegate: NSObject, NSApplicationDelegate {
 struct TamarinApp: App {
     @NSApplicationDelegateAdaptor(TamarinAppDelegate.self) private var appDelegate
     @State private var model = AppModel()
+    private let updaterController: SPUStandardUpdaterController?
+
+    init() {
+        guard
+            let encodedPublicKey = Bundle.main.object(
+                forInfoDictionaryKey: "SUPublicEDKey"
+            ) as? String,
+            Data(base64Encoded: encodedPublicKey)?.count == 32
+        else {
+            updaterController = nil
+            return
+        }
+
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -43,6 +63,12 @@ struct TamarinApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
+            CommandGroup(after: .appInfo) {
+                if let updaterController {
+                    CheckForUpdatesView(updater: updaterController.updater)
+                }
+            }
+
             CommandMenu("Worktree") {
                 Button("Previous Worktree") {
                     _ = model.selectPreviousWorktree()

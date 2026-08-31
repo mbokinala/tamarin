@@ -13,6 +13,10 @@ xcuserdata/
 *.dSYM.zip
 *.dSYM
 
+## Release credentials
+*.p12
+AuthKey_*.p8
+
 ## Playgrounds
 timeline.xctimeline
 playground.xcworkspace

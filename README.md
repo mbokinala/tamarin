@@ -27,7 +27,9 @@ Swing between (work)trees
 
 Tamarin requires macOS 14 or later and Git at `/usr/bin/git`.
 
-Tamarin does not publish binary releases yet. Build the app from source.
+Download a published signed build from [GitHub Releases](https://github.com/mbokinala/tamarin/releases/latest). If no build is available, build Tamarin from source.
+
+Tamarin uses Sparkle to install later updates. Use **Tamarin > Check for Updates…** to start a manual update check.
 
 ## Build from source
 
@@ -36,3 +38,9 @@ Tamarin does not publish binary releases yet. Build the app from source.
 3. Wait for Xcode to resolve the Swift package dependencies.
 4. Select the Tamarin scheme.
 5. Build and run the app.
+
+Local builds do not start Sparkle because they do not contain the release public key.
+
+## Create a release
+
+Read the [release guide](docs/releases.md) to configure signing, notarization, automatic updates, and GitHub Actions.

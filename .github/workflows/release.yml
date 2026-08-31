@@ -1,0 +1,353 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Sign, notarize, and publish
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      PROJECT: Tamarin.xcodeproj
+      SCHEME: Tamarin
+      TEAM_ID: 4XUDFLD5RY
+      SPARKLE_ACCOUNT: com.mbokinala.Tamarin
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the release version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The release tag must use the vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::The release commit is not on main."
+            exit 1
+          fi
+
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=Tamarin-$version.zip" >> "$GITHUB_ENV"
+          echo "DSYM_NAME=Tamarin-$version.dSYM.zip" >> "$GITHUB_ENV"
+
+      - name: Make sure that the release secrets exist
+        shell: bash
+        env:
+          DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          DEVELOPER_ID_APPLICATION_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          required_secrets=(
+            DEVELOPER_ID_APPLICATION_P12_BASE64
+            DEVELOPER_ID_APPLICATION_P12_PASSWORD
+            APP_STORE_CONNECT_API_KEY_P8_BASE64
+            APP_STORE_CONNECT_API_KEY_ID
+            SPARKLE_PRIVATE_KEY
+          )
+
+          for secret_name in "${required_secrets[@]}"; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error::The $secret_name secret is missing."
+              missing=1
+            fi
+          done
+
+          exit "$missing"
+
+      - name: Import the Developer ID certificate
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          certificate_path="$RUNNER_TEMP/developer-id-application.p12"
+          keychain_path="$RUNNER_TEMP/tamarin-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          trap 'rm -f "$certificate_path"' EXIT
+          umask 077
+
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -t cert \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -d user -s "$keychain_path"
+
+          identities="$(
+            security find-identity -v -p codesigning "$keychain_path"
+          )"
+          printf '%s\n' "$identities"
+          if [[ "$identities" != *"Developer ID Application:"* \
+            || "$identities" != *"($TEAM_ID)"* ]]; then
+            echo "::error::The keychain does not contain a Developer ID Application certificate for $TEAM_ID."
+            exit 1
+          fi
+
+          echo "KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Resolve Swift packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_packages="$RUNNER_TEMP/SourcePackages"
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$source_packages"
+
+          sparkle_bin="$source_packages/artifacts/sparkle/Sparkle/bin"
+          if [[ ! -x "$sparkle_bin/generate_appcast" ]]; then
+            echo "::error::The Sparkle command-line tools were not resolved."
+            exit 1
+          fi
+
+          echo "SOURCE_PACKAGES=$source_packages" >> "$GITHUB_ENV"
+          echo "SPARKLE_BIN=$sparkle_bin" >> "$GITHUB_ENV"
+
+      - name: Read the Sparkle public key
+        shell: bash
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          private_key_path="$RUNNER_TEMP/sparkle-private-key"
+          trap 'rm -f "$private_key_path"' EXIT
+          umask 077
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$private_key_path"
+
+          "$SPARKLE_BIN/generate_keys" \
+            --account "$SPARKLE_ACCOUNT" \
+            -f "$private_key_path" \
+            > /dev/null
+
+          public_key="$(
+            "$SPARKLE_BIN/generate_keys" \
+              --account "$SPARKLE_ACCOUNT" \
+              -p
+          )"
+          public_key_bytes="$(
+            printf '%s' "$public_key" \
+              | base64 --decode \
+              | wc -c \
+              | tr -d '[:space:]'
+          )"
+
+          if [[ "$public_key_bytes" != "32" ]]; then
+            echo "::error::The Sparkle private key did not produce a valid public key."
+            exit 1
+          fi
+
+          echo "SPARKLE_PUBLIC_ED_KEY=$public_key" >> "$GITHUB_ENV"
+
+      - name: Archive and export Tamarin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_path="$RUNNER_TEMP/Tamarin.xcarchive"
+          export_path="$RUNNER_TEMP/Export"
+
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -archivePath "$archive_path" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$VERSION" \
+            SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application"
+
+          xcodebuild -exportArchive \
+            -archivePath "$archive_path" \
+            -exportPath "$export_path" \
+            -exportOptionsPlist Config/ExportOptions.plist
+
+          app_path="$export_path/Tamarin.app"
+          if [[ ! -d "$app_path" ]]; then
+            echo "::error::The exported Tamarin app is missing."
+            exit 1
+          fi
+
+          embedded_public_key="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :SUPublicEDKey' \
+              "$app_path/Contents/Info.plist"
+          )"
+          if [[ "$embedded_public_key" != "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+            echo "::error::The exported app contains the wrong Sparkle public key."
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          codesign --display --verbose=4 "$app_path" 2>&1 \
+            | grep -q "Authority=Developer ID Application"
+
+          dsym_path="$archive_path/dSYMs/Tamarin.app.dSYM"
+          if [[ -d "$dsym_path" ]]; then
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$dsym_path" \
+              "$RUNNER_TEMP/$DSYM_NAME"
+            echo "DSYM_PATH=$RUNNER_TEMP/$DSYM_NAME" >> "$GITHUB_ENV"
+          fi
+
+          echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
+
+      - name: Notarize Tamarin
+        shell: bash
+        env:
+          API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+
+          api_key_path="$RUNNER_TEMP/AuthKey_$API_KEY_ID.p8"
+          submission_path="$RUNNER_TEMP/Tamarin-notarization.zip"
+          trap 'rm -f "$api_key_path" "$submission_path"' EXIT
+          umask 077
+
+          printf '%s' "$API_KEY_BASE64" | base64 --decode > "$api_key_path"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "$submission_path"
+
+          notary_credentials=(
+            --key "$api_key_path"
+            --key-id "$API_KEY_ID"
+          )
+          if [[ -n "$API_ISSUER_ID" ]]; then
+            notary_credentials+=(--issuer "$API_ISSUER_ID")
+          fi
+
+          xcrun notarytool submit "$submission_path" \
+            "${notary_credentials[@]}" \
+            --wait \
+            --timeout 45m
+
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+
+      - name: Create the signed Sparkle appcast
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          updates_path="$RUNNER_TEMP/Updates"
+          archive_path="$updates_path/$ARCHIVE_NAME"
+          release_notes_path="$updates_path/Tamarin-$VERSION.md"
+          appcast_path="$updates_path/appcast.xml"
+          mkdir -p "$updates_path"
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "$archive_path"
+
+          gh api \
+            --method POST \
+            "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            --jq .body \
+            > "$release_notes_path"
+
+          printf '%s' "$SPARKLE_PRIVATE_KEY" \
+            | "$SPARKLE_BIN/generate_appcast" \
+                --ed-key-file - \
+                --download-url-prefix \
+                  "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+                --embed-release-notes \
+                --link "https://github.com/$GITHUB_REPOSITORY" \
+                "$updates_path"
+
+          xmllint --noout "$appcast_path"
+          grep -q "sparkle:edSignature=" "$appcast_path"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" \
+            | "$SPARKLE_BIN/sign_update" \
+                --verify \
+                --ed-key-file - \
+                "$appcast_path"
+
+          echo "RELEASE_ARCHIVE=$archive_path" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES=$release_notes_path" >> "$GITHUB_ENV"
+          echo "APPCAST_PATH=$appcast_path" >> "$GITHUB_ENV"
+
+      - name: Publish the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          release_assets=("$RELEASE_ARCHIVE" "$APPCAST_PATH")
+          if [[ -n "${DSYM_PATH:-}" ]]; then
+            release_assets+=("$DSYM_PATH")
+          fi
+
+          gh release create "$GITHUB_REF_NAME" \
+            "${release_assets[@]}" \
+            --verify-tag \
+            --latest \
+            --title "Tamarin $VERSION" \
+            --notes-file "$RELEASE_NOTES"
+
+          echo "### Tamarin $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "The signed and notarized release is now available on GitHub." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the temporary keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
