@@ -1,8 +1,8 @@
 import SwiftUI
 
-private enum WorktreeBranchMode: Hashable {
-    case existing
-    case new
+private enum WorktreeBranchSelection: Hashable {
+    case existing(GitBranch.ID)
+    case create
 }
 
 struct CreateWorktreeSheet: View {
@@ -13,9 +13,7 @@ struct CreateWorktreeSheet: View {
 
     @State private var branches: [GitBranch] = []
     @State private var searchText = ""
-    @State private var selectedBranchID: GitBranch.ID?
-    @State private var branchMode: WorktreeBranchMode = .existing
-    @State private var newBranchName = ""
+    @State private var selection: WorktreeBranchSelection?
     @State private var isLoading = true
     @State private var hasSetupScript = false
 
@@ -39,61 +37,15 @@ struct CreateWorktreeSheet: View {
             }
             .padding(20)
 
-            HStack {
-                Picker("Branch option", selection: $branchMode) {
-                    Text("Existing Branch").tag(WorktreeBranchMode.existing)
-                    Text("New Branch").tag(WorktreeBranchMode.new)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 320)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 12)
-            .onChange(of: branchMode) {
-                searchText = ""
-                selectedBranchID = nil
-                selectFirstAvailableBranch()
-            }
-
-            if branchMode == .new {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.triangle.branch")
-                            .foregroundStyle(.secondary)
-                        TextField("New branch name", text: $newBranchName)
-                            .textFieldStyle(.plain)
-                    }
-                    .padding(.horizontal, 11)
-                    .frame(height: 36)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-
-                    if newBranchAlreadyExists {
-                        Label(
-                            "A local branch with this name already exists.",
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                    } else {
-                        Text("The new branch will start from the branch or remote ref selected below.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
-            }
-
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField(
-                    branchMode == .new ? "Search starting points" : "Search branches",
-                    text: $searchText
-                )
+                TextField("Search or create a branch", text: $searchText)
                 .textFieldStyle(.plain)
-                .onSubmit(selectFirstAvailableBranch)
+                .onSubmit(submitSelection)
+                .onChange(of: searchText) {
+                    selectDefaultBranchChoice()
+                }
                 .onKeyPress(.downArrow, phases: [.down, .repeat]) { keyPress in
                     let modifiers = keyPress.modifiers.intersection([
                         .command, .control, .option, .shift,
@@ -134,19 +86,27 @@ struct CreateWorktreeSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if filteredBranches.isEmpty {
+                } else if filteredBranches.isEmpty && creatableBranchName == nil {
                     ContentUnavailableView.search(text: searchText)
                 } else {
                     ScrollViewReader { proxy in
-                        List(filteredBranches, selection: $selectedBranchID) { branch in
-                            branchRow(branch)
-                                .tag(branch.id)
-                                .id(branch.id)
+                        List(selection: $selection) {
+                            if let branchName = creatableBranchName {
+                                createBranchRow(named: branchName)
+                                    .tag(WorktreeBranchSelection.create)
+                                    .id(WorktreeBranchSelection.create)
+                            }
+
+                            ForEach(filteredBranches) { branch in
+                                branchRow(branch)
+                                    .tag(WorktreeBranchSelection.existing(branch.id))
+                                    .id(WorktreeBranchSelection.existing(branch.id))
+                            }
                         }
                         .listStyle(.inset)
-                        .onChange(of: selectedBranchID) { _, branchID in
-                            guard let branchID else { return }
-                            proxy.scrollTo(branchID)
+                        .onChange(of: selection) { _, selection in
+                            guard let selection else { return }
+                            proxy.scrollTo(selection)
                         }
                     }
                 }
@@ -201,7 +161,7 @@ struct CreateWorktreeSheet: View {
     }
 
     private var filteredBranches: [GitBranch] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = trimmedSearchText
         guard !query.isEmpty else { return branches }
         let terms = query.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
         return branches.filter { branch in
@@ -210,29 +170,49 @@ struct CreateWorktreeSheet: View {
         }
     }
 
-    private var selectedBranch: GitBranch? {
-        guard let selectedBranchID else { return nil }
-        return filteredBranches.first { $0.id == selectedBranchID }
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var trimmedNewBranchName: String {
-        newBranchName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var newBranchAlreadyExists: Bool {
-        guard !trimmedNewBranchName.isEmpty else { return false }
-        return branches.contains {
-            $0.kind == .local && $0.localBranchName == trimmedNewBranchName
+    private var exactlyMatchingBranch: GitBranch? {
+        guard !trimmedSearchText.isEmpty else { return nil }
+        return branches.first { branch in
+            branch.displayName.caseInsensitiveCompare(trimmedSearchText) == .orderedSame
+                || branch.localBranchName.caseInsensitiveCompare(trimmedSearchText) == .orderedSame
         }
     }
 
+    private var creatableBranchName: String? {
+        guard !trimmedSearchText.isEmpty, exactlyMatchingBranch == nil else { return nil }
+        return trimmedSearchText
+    }
+
+    private var defaultStartPoint: GitBranch? {
+        let repositoryPath = repository?.repositoryURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        return branches.first(where: {
+            $0.kind == .local
+                && $0.checkoutPath.map {
+                    URL(fileURLWithPath: $0)
+                        .standardizedFileURL
+                        .resolvingSymlinksInPath()
+                        .path
+                } == repositoryPath
+        })
+            ?? branches.first(where: { $0.kind == .local })
+            ?? branches.first
+    }
+
     private var canCreate: Bool {
-        guard let selectedBranch else { return false }
-        switch branchMode {
-        case .existing:
-            return !selectedBranch.isCheckedOut
-        case .new:
-            return !trimmedNewBranchName.isEmpty && !newBranchAlreadyExists
+        switch selection {
+        case let .existing(branchID):
+            return branches.first(where: { $0.id == branchID })?.isCheckedOut == false
+        case .create:
+            return creatableBranchName != nil && defaultStartPoint != nil
+        case nil:
+            return false
         }
     }
 
@@ -245,7 +225,7 @@ struct CreateWorktreeSheet: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(branch.displayName)
                     .lineLimit(1)
-                if branchMode == .existing, branch.kind == .remote {
+                if branch.kind == .remote {
                     Text("Creates local branch \(branch.localBranchName)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -272,8 +252,35 @@ struct CreateWorktreeSheet: View {
             }
         }
         .padding(.vertical, 4)
-        .opacity(branchMode == .existing && branch.isCheckedOut ? 0.55 : 1)
-        .allowsHitTesting(branchMode == .new || !branch.isCheckedOut)
+        .opacity(branch.isCheckedOut ? 0.55 : 1)
+        .allowsHitTesting(!branch.isCheckedOut)
+    }
+
+    private func createBranchRow(named branchName: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Create branch '\(branchName)'")
+                    .lineLimit(1)
+                if let defaultStartPoint {
+                    Text("Starts from \(defaultStartPoint.displayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+            Text("New")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.quaternary, in: Capsule())
+        }
+        .padding(.vertical, 4)
     }
 
     private func loadBranches() async {
@@ -287,72 +294,82 @@ struct CreateWorktreeSheet: View {
         }
         branches = await model.loadBranches(repositoryID: repositoryID)
         isLoading = false
-        if selectedBranch == nil
-            || (branchMode == .existing && selectedBranch?.isCheckedOut == true)
-        {
-            selectFirstAvailableBranch()
+        selectDefaultBranchChoice()
+    }
+
+    private func selectDefaultBranchChoice() {
+        if let exactlyMatchingBranch {
+            selection = exactlyMatchingBranch.isCheckedOut
+                ? nil
+                : .existing(exactlyMatchingBranch.id)
+        } else if creatableBranchName != nil, defaultStartPoint != nil {
+            selection = .create
+        } else if let branch = filteredBranches.first(where: { !$0.isCheckedOut }) {
+            selection = .existing(branch.id)
+        } else {
+            selection = nil
         }
     }
 
-    private func selectFirstAvailableBranch() {
-        switch branchMode {
-        case .existing:
-            selectedBranchID = filteredBranches.first(where: { !$0.isCheckedOut })?.id
-        case .new:
-            let repositoryPath = repository?.repositoryURL
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-                .path
-            selectedBranchID = filteredBranches.first(where: {
-                $0.kind == .local
-                    && $0.checkoutPath.map {
-                        URL(fileURLWithPath: $0)
-                            .standardizedFileURL
-                            .resolvingSymlinksInPath()
-                            .path
-                    } == repositoryPath
-            })?.id
-                ?? filteredBranches.first(where: { $0.kind == .local })?.id
-                ?? filteredBranches.first?.id
+    private var selectableBranchChoices: [WorktreeBranchSelection] {
+        var choices: [WorktreeBranchSelection] = []
+        if creatableBranchName != nil, defaultStartPoint != nil {
+            choices.append(.create)
         }
+        choices += filteredBranches
+            .filter { !$0.isCheckedOut }
+            .map { WorktreeBranchSelection.existing($0.id) }
+        return choices
     }
 
     @discardableResult
     private func moveBranchSelection(by offset: Int) -> Bool {
-        let selectableBranches = filteredBranches.filter {
-            branchMode == .new || !$0.isCheckedOut
-        }
-        guard !selectableBranches.isEmpty else { return false }
+        let choices = selectableBranchChoices
+        guard !choices.isEmpty else { return false }
 
         let nextIndex: Int
-        if let selectedBranchID,
-           let selectedIndex = selectableBranches.firstIndex(where: { $0.id == selectedBranchID })
+        if let selection,
+           let selectedIndex = choices.firstIndex(of: selection)
         {
-            nextIndex = min(max(selectedIndex + offset, 0), selectableBranches.count - 1)
+            nextIndex = min(max(selectedIndex + offset, 0), choices.count - 1)
         } else {
-            nextIndex = offset < 0 ? selectableBranches.count - 1 : 0
+            nextIndex = offset < 0 ? choices.count - 1 : 0
         }
 
-        selectedBranchID = selectableBranches[nextIndex].id
+        selection = choices[nextIndex]
         return true
     }
 
+    private func submitSelection() {
+        guard model.busyMessage == nil else { return }
+        if !canCreate {
+            selectDefaultBranchChoice()
+        }
+        guard canCreate else { return }
+        createWorktree()
+    }
+
     private func createWorktree() {
-        guard let selectedBranch else { return }
         Task {
             let didCreate: Bool
-            switch branchMode {
-            case .existing:
+            switch selection {
+            case let .existing(branchID):
+                guard let branch = branches.first(where: { $0.id == branchID }) else { return }
                 didCreate = await model.createWorktree(
                     repositoryID: repositoryID,
-                    branch: selectedBranch
+                    branch: branch
                 )
-            case .new:
+            case .create:
+                guard let branchName = creatableBranchName,
+                      let startPoint = defaultStartPoint
+                else { return }
                 didCreate = await model.createWorktree(
                     repositoryID: repositoryID,
-                    newBranchName: trimmedNewBranchName,
-                    startingAt: selectedBranch
+                    newBranchName: branchName,
+                    startingAt: startPoint
                 )
+            case nil:
+                return
             }
             if didCreate {
                 dismiss()
