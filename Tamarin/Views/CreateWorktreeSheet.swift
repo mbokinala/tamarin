@@ -90,20 +90,36 @@ struct CreateWorktreeSheet: View {
                     ContentUnavailableView.search(text: searchText)
                 } else {
                     ScrollViewReader { proxy in
-                        List(selection: $selection) {
+                        List {
                             if let branchName = creatableBranchName {
-                                createBranchRow(named: branchName)
-                                    .tag(WorktreeBranchSelection.create)
-                                    .id(WorktreeBranchSelection.create)
+                                let choice = WorktreeBranchSelection.create
+                                let isSelected = selection == choice
+                                Button {
+                                    selection = choice
+                                } label: {
+                                    createBranchRow(named: branchName, isSelected: isSelected)
+                                }
+                                .buttonStyle(.plain)
+                                .listRowBackground(selectionBackground(isSelected))
+                                .id(WorktreeBranchSelection.create)
                             }
 
                             ForEach(filteredBranches) { branch in
-                                branchRow(branch)
-                                    .tag(WorktreeBranchSelection.existing(branch.id))
-                                    .id(WorktreeBranchSelection.existing(branch.id))
+                                let choice = WorktreeBranchSelection.existing(branch.id)
+                                let isSelected = selection == choice
+                                Button {
+                                    selection = choice
+                                } label: {
+                                    branchRow(branch, isSelected: isSelected)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(branch.isCheckedOut)
+                                .listRowBackground(selectionBackground(isSelected))
+                                .id(choice)
                             }
                         }
                         .listStyle(.inset)
+                        .padding(.horizontal, 12)
                         .onChange(of: selection) { _, selection in
                             guard let selection else { return }
                             proxy.scrollTo(selection)
@@ -216,23 +232,24 @@ struct CreateWorktreeSheet: View {
         }
     }
 
-    private func branchRow(_ branch: GitBranch) -> some View {
+    private func branchRow(_ branch: GitBranch, isSelected: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: branch.kind == .local ? "arrow.triangle.branch" : "network")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(branch.displayName)
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                     .lineLimit(1)
                 if branch.kind == .remote {
                     Text("Creates local branch \(branch.localBranchName)")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
                 } else if let checkoutPath = branch.checkoutPath {
                     Text("Checked out at \(checkoutPath)")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -241,46 +258,59 @@ struct CreateWorktreeSheet: View {
             Spacer()
             Text(branch.kind == .local ? "Local" : "Remote")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(.quaternary, in: Capsule())
+                .background(
+                    isSelected ? Color.white.opacity(0.18) : Color.secondary.opacity(0.12),
+                    in: Capsule()
+                )
             if branch.isCheckedOut {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
                     .help("Already checked out")
             }
         }
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(branch.isCheckedOut ? 0.55 : 1)
-        .allowsHitTesting(!branch.isCheckedOut)
     }
 
-    private func createBranchRow(named branchName: String) -> some View {
+    private func createBranchRow(named branchName: String, isSelected: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "plus")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Create branch '\(branchName)'")
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                     .lineLimit(1)
                 if let defaultStartPoint {
                     Text("Starts from \(defaultStartPoint.displayName)")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
                 }
             }
 
             Spacer()
             Text("New")
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(.quaternary, in: Capsule())
+                .background(
+                    isSelected ? Color.white.opacity(0.18) : Color.secondary.opacity(0.12),
+                    in: Capsule()
+                )
         }
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func selectionBackground(_ isSelected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(isSelected ? Color.accentColor : Color.clear)
     }
 
     private func loadBranches() async {
