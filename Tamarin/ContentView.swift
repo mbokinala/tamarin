@@ -14,7 +14,6 @@ struct ContentView: View {
     @State private var isSidebarVisible = true
     @State private var sidebarWidth: CGFloat = 300
     @State private var sidebarDragStartWidth: CGFloat?
-    @State private var worktreeRepository: RepositoryRecord?
     @State private var settingsRepository: RepositoryRecord?
 
     private let sidebarMinimumWidth: CGFloat = 250
@@ -26,7 +25,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             RepositorySidebar(
                 addRepository: chooseRepository,
-                createWorktree: { worktreeRepository = $0 },
+                createWorktree: { model.requestWorktreeCreation(for: $0) },
                 showSettings: { settingsRepository = $0 }
             )
             .frame(width: sidebarWidth)
@@ -56,7 +55,7 @@ struct ContentView: View {
         .task {
             await model.start()
         }
-        .sheet(item: $worktreeRepository) { repository in
+        .sheet(item: $model.worktreeCreationRepository) { repository in
             CreateWorktreeSheet(repositoryID: repository.id)
                 .environment(model)
         }

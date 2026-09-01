@@ -70,6 +70,14 @@ struct TamarinApp: App {
             }
 
             CommandMenu("Worktree") {
+                Button("New Worktree…") {
+                    _ = model.requestWorktreeCreation()
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!model.canCreateWorktree)
+
+                Divider()
+
                 Button("Previous Worktree") {
                     _ = model.selectPreviousWorktree()
                 }

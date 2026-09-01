@@ -215,7 +215,7 @@ struct RepositorySidebar: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Create a worktree")
+            .help("Create a worktree (⇧⌘N)")
 
             Menu {
                 Button("Create Worktree…") { createWorktree(repository) }

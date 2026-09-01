@@ -15,6 +15,7 @@ struct AppNotice: Identifiable {
 }
 
 private enum AppKeyboardShortcut: Sendable {
+    case newWorktree
     case newTerminal
     case closeTerminal
     case quitApplication
@@ -62,6 +63,7 @@ final class AppModel {
     var setupStateByWorktree: [String: SetupExecutionState] = [:]
     var busyMessage: String?
     var notice: AppNotice?
+    var worktreeCreationRepository: RepositoryRecord?
 
     @ObservationIgnored private let store: RepositoryStore
     @ObservationIgnored private let git: GitService
@@ -133,6 +135,10 @@ final class AppModel {
         selectedWorktree != nil && selectedWorktreeInfo?.isPrunable != true
     }
 
+    var canCreateWorktree: Bool {
+        selectedRepository != nil
+    }
+
     var canCloseActiveTerminal: Bool {
         activeTerminalSession != nil
     }
@@ -143,6 +149,15 @@ final class AppModel {
 
     var canSelectPreviousWorktree: Bool {
         orderedWorktreeSelections.count > 1
+    }
+
+    @discardableResult
+    func requestWorktreeCreation(
+        for repository: RepositoryRecord? = nil
+    ) -> Bool {
+        guard let repository = repository ?? selectedRepository else { return false }
+        worktreeCreationRepository = repository
+        return true
     }
 
     func defaultWorktreeRoot(for repository: RepositoryRecord) -> URL {
@@ -837,10 +852,14 @@ final class AppModel {
             ])
             let shortcut: AppKeyboardShortcut
             if modifiers == [.command, .shift] {
-                switch event.keyCode {
-                case 30: shortcut = .nextWorktree
-                case 33: shortcut = .previousWorktree
-                default: return event
+                if event.charactersIgnoringModifiers?.lowercased() == "n" {
+                    shortcut = .newWorktree
+                } else {
+                    switch event.keyCode {
+                    case 30: shortcut = .nextWorktree
+                    case 33: shortcut = .previousWorktree
+                    default: return event
+                    }
                 }
             } else if modifiers == .command,
                       let key = event.charactersIgnoringModifiers?.lowercased()
@@ -871,6 +890,10 @@ final class AppModel {
         guard !isRepeat else { return true }
 
         switch shortcut {
+        case .newWorktree:
+            guard canCreateWorktree else { return true }
+            return requestWorktreeCreation()
+
         case .newTerminal:
             guard canCreateTerminal else { return true }
             _ = createTerminal()
