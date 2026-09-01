@@ -289,7 +289,15 @@ struct WorktreeWorkspaceView: View {
             } description: {
                 Text("Create a terminal in this worktree.")
             } actions: {
-                Button("New Terminal") { _ = model.createTerminal() }
+                Button {
+                    _ = model.createTerminal()
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("New Terminal")
+                        Text("⌘T")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                     .disabled(worktree.isPrunable)
             }
         } else if let active, active.isExited {
