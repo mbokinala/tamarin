@@ -9,10 +9,13 @@ struct RepositorySidebar: View {
     let createWorktree: (RepositoryRecord) -> Void
     let showSettings: (RepositoryRecord) -> Void
 
+    @AppStorage("collapsedRepositoryIDs") private var collapsedRepositoryIDsStorage = ""
     @State private var hoveredWorktree: WorktreeSelection?
     @State private var addRepositoryHovered = false
     @State private var showingForceRemoveConfirmation = false
     @State private var pendingForceRemoval: WorktreeSelection?
+    @State private var showingRepositoryRemovalConfirmation = false
+    @State private var pendingRepositoryRemoval: RepositoryRecord?
     @FocusState private var worktreeNavigationFocused: Bool
 
     var body: some View {
@@ -47,6 +50,25 @@ struct RepositorySidebar: View {
         } message: {
             Text("Git reports that this worktree can only be removed with force. This permanently deletes its uncommitted changes and untracked files. The branch is not deleted.")
         }
+        .confirmationDialog(
+            "Remove \(pendingRepositoryRemoval?.name ?? "Repository") from Tamarin?",
+            isPresented: $showingRepositoryRemovalConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Repository", role: .destructive) {
+                guard let repository = pendingRepositoryRemoval else { return }
+                pendingRepositoryRemoval = nil
+                model.forgetRepository(id: repository.id)
+                if model.repository(id: repository.id) == nil {
+                    removeCollapsedRepositoryID(repository.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRepositoryRemoval = nil
+            }
+        } message: {
+            Text("This only removes the repository from Tamarin. It does not delete the repository, its branches, or its worktrees.")
+        }
     }
 
     private var repositoryList: some View {
@@ -56,7 +78,9 @@ struct RepositorySidebar: View {
                     ForEach(model.repositories) { repository in
                         VStack(alignment: .leading, spacing: 2) {
                             repositoryHeader(repository)
-                            repositoryWorktrees(repository)
+                            if !isRepositoryCollapsed(repository.id) {
+                                repositoryWorktrees(repository)
+                            }
                         }
                     }
                 }
@@ -148,19 +172,38 @@ struct RepositorySidebar: View {
 
     private func repositoryHeader(_ repository: RepositoryRecord) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
+            Button {
+                toggleRepository(repository.id)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isRepositoryCollapsed(repository.id)
+                        ? "chevron.right"
+                        : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
 
-            Text(repository.name)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .layoutPriority(1)
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
 
-            Spacer(minLength: 4)
+                    Text(repository.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .layoutPriority(1)
+
+                    Spacer(minLength: 4)
+                }
+                .frame(maxWidth: .infinity, minHeight: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(repository.name)
+            .accessibilityValue(isRepositoryCollapsed(repository.id) ? "Collapsed" : "Expanded")
+            .accessibilityHint(isRepositoryCollapsed(repository.id) ? "Show worktrees" : "Hide worktrees")
 
             Button {
                 createWorktree(repository)
@@ -179,6 +222,11 @@ struct RepositorySidebar: View {
                 Button("Repository Settings…") { showSettings(repository) }
                 Divider()
                 Button("Reveal in Finder") { model.reveal(repository.path) }
+                Divider()
+                Button("Remove Repository…", role: .destructive) {
+                    pendingRepositoryRemoval = repository
+                    showingRepositoryRemovalConfirmation = true
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 11, weight: .semibold))
@@ -196,6 +244,40 @@ struct RepositorySidebar: View {
         .frame(height: 32)
         .contentShape(Rectangle())
         .help(repository.path)
+    }
+
+    private func isRepositoryCollapsed(_ repositoryID: UUID) -> Bool {
+        collapsedRepositoryIDs.contains(repositoryID)
+    }
+
+    private func toggleRepository(_ repositoryID: UUID) {
+        var repositoryIDs = collapsedRepositoryIDs
+        if !repositoryIDs.insert(repositoryID).inserted {
+            repositoryIDs.remove(repositoryID)
+        }
+        collapsedRepositoryIDs = repositoryIDs
+    }
+
+    private func removeCollapsedRepositoryID(_ repositoryID: UUID) {
+        var repositoryIDs = collapsedRepositoryIDs
+        repositoryIDs.remove(repositoryID)
+        collapsedRepositoryIDs = repositoryIDs
+    }
+
+    private var collapsedRepositoryIDs: Set<UUID> {
+        get {
+            Set(
+                collapsedRepositoryIDsStorage
+                    .split(separator: ",")
+                    .compactMap { UUID(uuidString: String($0)) }
+            )
+        }
+        nonmutating set {
+            collapsedRepositoryIDsStorage = newValue
+                .map(\.uuidString)
+                .sorted()
+                .joined(separator: ",")
+        }
     }
 
     private func worktreeRow(
@@ -392,11 +474,13 @@ struct RepositorySidebar: View {
             return
         }
 
-        let selections = model.repositories.flatMap { repository in
-            model.worktrees(for: repository.id).map { worktree in
-                WorktreeSelection(repositoryID: repository.id, path: worktree.path)
+        let selections = model.repositories
+            .filter { !isRepositoryCollapsed($0.id) }
+            .flatMap { repository in
+                model.worktrees(for: repository.id).map { worktree in
+                    WorktreeSelection(repositoryID: repository.id, path: worktree.path)
+                }
             }
-        }
         guard !selections.isEmpty else { return }
 
         let targetIndex: Int
