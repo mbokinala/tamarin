@@ -353,7 +353,7 @@
 			repositoryURL = "https://github.com/Lakr233/libghostty-spm.git";
 			requirement = {
 				kind = exactVersion;
-				version = 1.4.0;
+				version = 1.5.1;
 			};
 		};
 		A2000002304B0000006135E4 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
