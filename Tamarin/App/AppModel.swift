@@ -8,6 +8,11 @@ struct WorktreeSelection: Hashable, Sendable {
     let path: String
 }
 
+struct PendingWorktreeCreation: Equatable {
+    let repositoryID: UUID
+    let worktree: WorktreeInfo
+}
+
 struct AppNotice: Identifiable {
     let id = UUID()
     let title: String
@@ -53,6 +58,8 @@ final class AppModel {
     var repositories: [RepositoryRecord] = []
     var worktreesByRepository: [UUID: [WorktreeInfo]] = [:]
     var selectedWorktree: WorktreeSelection?
+    private(set) var removingWorktree: WorktreeSelection?
+    private(set) var pendingWorktreeCreation: PendingWorktreeCreation?
 
     var terminalSessions: [TerminalTabSession] = []
     var activeTerminalByWorktree: [String: UUID] = [:]
@@ -277,6 +284,13 @@ final class AppModel {
     }
 
     func forgetRepository(id: UUID) {
+        guard pendingWorktreeCreation?.repositoryID != id else {
+            notice = AppNotice(
+                title: "Worktree Creation in Progress",
+                message: "Wait for the worktree to finish being created before removing this repository."
+            )
+            return
+        }
         guard !terminalSessions.contains(where: { $0.repositoryID == id }) else {
             notice = AppNotice(
                 title: "Close Repository Terminals First",
@@ -420,6 +434,11 @@ final class AppModel {
         let branchName = request.branchName
         let destination = uniqueDestination(in: root, branchName: branchName)
         busyMessage = "Creating \(branchName)…"
+        pendingWorktreeCreation = PendingWorktreeCreation(
+            repositoryID: repositoryID,
+            worktree: WorktreeInfo(path: destination.path, branch: branchName)
+        )
+        defer { pendingWorktreeCreation = nil }
 
         let createdWorktree: WorktreeInfo
         do {
@@ -564,6 +583,9 @@ final class AppModel {
             )
             return .failed
         }
+
+        removingWorktree = WorktreeSelection(repositoryID: repositoryID, path: path)
+        defer { removingWorktree = nil }
 
         let teardownAlreadyRan = force
             && teardownPreparedForForceRemoval.remove(path) != nil

@@ -115,6 +115,10 @@ struct WorktreeWorkspaceView: View {
                 .help("Reveal in Finder")
 
                 if !worktree.isPrimary {
+                    let isRemoving = model.removingWorktree == WorktreeSelection(
+                        repositoryID: repository.id,
+                        path: worktree.path
+                    )
                     Button(role: .destructive) {
                         guard let selection = model.selectedWorktree else { return }
                         Task {
@@ -128,12 +132,20 @@ struct WorktreeWorkspaceView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "trash")
+                        Group {
+                            if isRemoving {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "trash")
+                            }
+                        }
                             .frame(width: 24, height: 24)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
-                    .disabled(!model.sessions(for: worktree.path).isEmpty || worktree.isLocked)
+                    .disabled(isRemoving || !model.sessions(for: worktree.path).isEmpty || worktree.isLocked)
+                    .accessibilityLabel("\(isRemoving ? "Removing" : "Remove") \(worktreeTitle(worktree))")
                     .help(removalHelp(worktree))
                 }
             }

@@ -380,30 +380,32 @@ struct CreateWorktreeSheet: View {
     }
 
     private func createWorktree() {
-        Task {
-            let didCreate: Bool
-            switch selection {
-            case let .existing(branchID):
-                guard let branch = branches.first(where: { $0.id == branchID }) else { return }
-                didCreate = await model.createWorktree(
+        guard canCreate, model.busyMessage == nil else { return }
+
+        switch selection {
+        case let .existing(branchID):
+            guard let branch = branches.first(where: { $0.id == branchID }) else { return }
+            dismiss()
+            Task {
+                await model.createWorktree(
                     repositoryID: repositoryID,
                     branch: branch
                 )
-            case .create:
-                guard let branchName = creatableBranchName,
-                      let startPoint = defaultStartPoint
-                else { return }
-                didCreate = await model.createWorktree(
+            }
+        case .create:
+            guard let branchName = creatableBranchName,
+                  let startPoint = defaultStartPoint
+            else { return }
+            dismiss()
+            Task {
+                await model.createWorktree(
                     repositoryID: repositoryID,
                     newBranchName: branchName,
                     startingAt: startPoint
                 )
-            case nil:
-                return
             }
-            if didCreate {
-                dismiss()
-            }
+        case nil:
+            return
         }
     }
 }

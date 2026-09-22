@@ -69,6 +69,11 @@ struct RepositorySidebar: View {
         } message: {
             Text("This only removes the repository from Tamarin. It does not delete the repository, its branches, or its worktrees.")
         }
+        .onChange(of: model.pendingWorktreeCreation?.repositoryID) { _, repositoryID in
+            if let repositoryID {
+                removeCollapsedRepositoryID(repositoryID)
+            }
+        }
     }
 
     private var repositoryList: some View {
@@ -138,9 +143,12 @@ struct RepositorySidebar: View {
 
     @ViewBuilder
     private func repositoryWorktrees(_ repository: RepositoryRecord) -> some View {
-        let worktrees = model.worktrees(for: repository.id)
+        let pending = model.pendingWorktreeCreation.flatMap {
+            $0.repositoryID == repository.id ? $0.worktree : nil
+        }
+        let worktrees = model.worktrees(for: repository.id).filter { $0.path != pending?.path }
 
-        if model.loadingRepositoryIDs.contains(repository.id), worktrees.isEmpty {
+        if model.loadingRepositoryIDs.contains(repository.id), worktrees.isEmpty, pending == nil {
             HStack(spacing: 7) {
                 ProgressView()
                     .controlSize(.mini)
@@ -151,7 +159,7 @@ struct RepositorySidebar: View {
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
-        } else if worktrees.isEmpty {
+        } else if worktrees.isEmpty, pending == nil {
             HStack(spacing: 7) {
                 Image(systemName: "tray")
                     .font(.system(size: 11))
@@ -167,6 +175,25 @@ struct RepositorySidebar: View {
             ForEach(worktrees) { worktree in
                 worktreeRow(worktree, repository: repository)
             }
+        }
+
+        if let pending {
+            HStack(spacing: 7) {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 16)
+                worktreeName(pending)
+                Spacer(minLength: 4)
+                Text("Creating…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .help("Creating \(worktreeTitle(pending))\n\(pending.path)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(worktreeTitle(pending))
+            .accessibilityValue("Creating worktree")
         }
     }
 
@@ -290,6 +317,7 @@ struct RepositorySidebar: View {
         )
         let selected = model.selectedWorktree == selection
         let hovered = hoveredWorktree == selection
+        let isRemoving = model.removingWorktree == selection
 
         return HStack(spacing: 0) {
             Button {
@@ -342,16 +370,23 @@ struct RepositorySidebar: View {
                 Button(role: .destructive) {
                     removeWorktree(selection)
                 } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10, weight: .medium))
+                    Group {
+                        if isRemoving {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "trash")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                    }
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .disabled(!model.sessions(for: worktree.path).isEmpty || worktree.isLocked)
+                .disabled(isRemoving || !model.sessions(for: worktree.path).isEmpty || worktree.isLocked)
                 .help(removalHelp(worktree))
-                .accessibilityLabel("Remove \(worktreeTitle(worktree))")
+                .accessibilityLabel("\(isRemoving ? "Removing" : "Remove") \(worktreeTitle(worktree))")
                 .padding(.trailing, 2)
             }
         }

@@ -55,6 +55,11 @@ struct ContentView: View {
         .task {
             await model.start()
         }
+        .onChange(of: model.pendingWorktreeCreation) { _, pending in
+            if pending != nil {
+                isSidebarVisible = true
+            }
+        }
         .sheet(item: $model.worktreeCreationRepository) { repository in
             CreateWorktreeSheet(repositoryID: repository.id)
                 .environment(model)
