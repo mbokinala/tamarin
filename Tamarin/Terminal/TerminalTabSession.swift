@@ -60,6 +60,7 @@ final class TerminalTabSession: Identifiable {
     let worktreePath: String
     let ordinal: Int
     let kind: TerminalTabKind
+    let openerID: UUID?
 
     var customTitle: String?
     var generatedTitle: String
@@ -75,6 +76,7 @@ final class TerminalTabSession: Identifiable {
         repositoryID: UUID,
         worktreePath: String,
         ordinal: Int,
+        openerID: UUID? = nil,
         customTitle: String? = nil,
         kind: TerminalTabKind = .shell,
         setupOutputSession: SetupOutputSession? = nil
@@ -83,6 +85,7 @@ final class TerminalTabSession: Identifiable {
         self.repositoryID = repositoryID
         self.worktreePath = worktreePath
         self.ordinal = ordinal
+        self.openerID = openerID
         self.kind = kind
         self.customTitle = customTitle
         generatedTitle = kind.defaultTitle(ordinal: ordinal)

@@ -718,7 +718,8 @@ final class AppModel {
         let session = TerminalTabSession(
             repositoryID: repositoryID,
             worktreePath: worktreePath,
-            ordinal: nextOrdinal
+            ordinal: nextOrdinal,
+            openerID: activeTerminalByWorktree[worktreePath]
         )
         terminalSessions.append(session)
         if activate {
@@ -743,6 +744,7 @@ final class AppModel {
             repositoryID: repositoryID,
             worktreePath: worktreePath,
             ordinal: 0,
+            openerID: activeTerminalByWorktree[worktreePath],
             kind: .setupOutput,
             setupOutputSession: outputSession
         )
@@ -775,8 +777,15 @@ final class AppModel {
         session.terminal.isSurfaceVisible = false
 
         if activeTerminalByWorktree[session.worktreePath] == id {
-            activeTerminalByWorktree[session.worktreePath] = sessions(for: session.worktreePath)
-                .first { $0.id != id && !detachingTerminalIDs.contains($0.id) }?.id
+            let worktreeSessions = sessions(for: session.worktreePath)
+            let availableSessions = worktreeSessions.filter { !detachingTerminalIDs.contains($0.id) }
+            let opener = availableSessions.first { $0.id == session.openerID }
+            let closingIndex = worktreeSessions.firstIndex { $0.id == id }!
+            let rightNeighbor = worktreeSessions.dropFirst(closingIndex + 1)
+                .first { !detachingTerminalIDs.contains($0.id) }
+            let leftNeighbor = worktreeSessions.prefix(closingIndex)
+                .last { !detachingTerminalIDs.contains($0.id) }
+            activeTerminalByWorktree[session.worktreePath] = (opener ?? rightNeighbor ?? leftNeighbor)?.id
         }
         updateTerminalVisibility(requestFocus: true)
 
